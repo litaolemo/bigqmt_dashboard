@@ -732,28 +732,49 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None):
     return encoded_jwt
 
 # 获取用户信息
+# 绝不能出现在接口响应里的字段。clear_password 是明文存的清仓密码。
+SENSITIVE_USER_FIELDS = ("password", "clear_password")
+
+
+def _row_to_user(cursor, row):
+    """按 cursor.description 取列名，不要写死列表。
+
+    写死列名踩过一次大坑：users 表实际顺序是
+        account_name, created_at, alias, clear_password, if_delete
+    而代码里写的是
+        account_name, alias, created_at, if_delete
+    错位的结果是 if_delete 字段里装的其实是 clear_password —— 而
+    /api/users/me 只 pop 了 password，于是清仓密码明文发给了浏览器。
+    alias 和 created_at 也一直是对调的。
+    """
+    if not row:
+        return None
+    return dict(zip([d[0] for d in cursor.description], row))
+
+
+def public_user(user):
+    """剥掉敏感字段后的用户信息，给接口返回用。"""
+    if not user:
+        return user
+    return {k: v for k, v in user.items() if k not in SENSITIVE_USER_FIELDS}
+
+
 def get_user(username: str):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('SELECT * FROM users WHERE username = ? AND (if_delete != 1 OR if_delete IS NULL)', (username,))
-    user = cursor.fetchone()
+    user = _row_to_user(cursor, cursor.fetchone())
     conn.close()
-    if user:
-        columns = ["id", "account_id", "username", "password", "role", "account_name", "alias", "created_at", "if_delete"]
-        return dict(zip(columns, user))
-    return None
+    return user
 
 # 获取用户信息通过account_id
 def get_user_by_account_id(account_id: str):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('SELECT * FROM users WHERE account_id = ?', (account_id,))
-    user = cursor.fetchone()
+    user = _row_to_user(cursor, cursor.fetchone())
     conn.close()
-    if user:
-        columns = ["id", "account_id", "username", "password", "role", "account_name", "alias", "created_at", "if_delete"]
-        return dict(zip(columns, user))
-    return None
+    return user
 
 # 登录限制相关辅助函数
 def get_login_attempts(ip: str):
@@ -872,7 +893,7 @@ async def get_current_admin(current_user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Not enough permissions")
     return current_user
 
-# ============ 观察者(viewer) 独立体系：注册/登录/鉴权/在线统计（只允许看历史买入列表） ============
+# ============ 观察者(viewer) 独立体系：注册/登录/鉴权/在线统计（只允许看买卖流水） ============
 _VIEWER_LAST_BEAT = {}  # username -> 上次心跳时间戳（内存，用于累计在线时长）
 
 def get_viewer(username: str):
@@ -991,7 +1012,7 @@ async def get_current_viewer(token: str = Depends(oauth2_scheme)):
     return {"username": username, "role": "viewer", "is_viewer": True}
 
 async def get_user_or_viewer(token: str = Depends(oauth2_scheme)):
-    """历史买入列表：账户用户 或 观察者 均可访问。"""
+    """买卖流水：账户用户 或 观察者 均可访问。"""
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         if payload.get("type") == "viewer":
@@ -4027,9 +4048,8 @@ async def logout(token: str = Depends(oauth2_scheme)):
 # 获取当前用户信息
 @app.get("/api/users/me")
 async def read_users_me(current_user: dict = Depends(get_current_user)):
-    # 移除密码等敏感信息
-    current_user.pop("password", None)
-    return current_user
+    # 登录密码哈希和明文清仓密码都不能出去
+    return public_user(current_user)
 
 # 账号指令模型
 class CommandCreate(BaseModel):
