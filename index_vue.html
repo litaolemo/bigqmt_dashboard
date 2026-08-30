@@ -1,0 +1,2563 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>股票持仓展示系统</title>
+    <!-- Vue 3 -->
+    <script src="https://cdn.bootcdn.net/ajax/libs/vue/3.3.4/vue.global.prod.min.js"></script>
+    <!-- Element Plus -->
+    <link rel="stylesheet" href="https://cdn.bootcdn.net/ajax/libs/element-plus/2.3.14/index.css">
+    <script src="https://cdn.bootcdn.net/ajax/libs/element-plus/2.3.14/index.full.min.js"></script>
+    <!-- Element Plus Icons -->
+    <script src="https://cdn.bootcdn.net/ajax/libs/element-plus-icons-vue/2.1.0/index.iife.min.js"></script>
+    <!-- Element Plus 中文语言包 -->
+    <script>
+        // 直接定义中文语言包配置
+        window.ElementPlusLocaleZhCn = {
+            name: 'zh-cn',
+            el: {
+                colorpicker: { confirm: '确定', clear: '清空' },
+                datepicker: {
+                    now: '此刻',
+                    today: '今天',
+                    cancel: '取消',
+                    clear: '清空',
+                    confirm: '确定',
+                    selectDate: '选择日期',
+                    selectTime: '选择时间',
+                    startDate: '开始日期',
+                    startTime: '开始时间',
+                    endDate: '结束日期',
+                    endTime: '结束时间',
+                    prevYear: '前一年',
+                    nextYear: '后一年',
+                    prevMonth: '上个月',
+                    nextMonth: '下个月',
+                    year: '年',
+                    month1: '1 月', month2: '2 月', month3: '3 月', month4: '4 月',
+                    month5: '5 月', month6: '6 月', month7: '7 月', month8: '8 月',
+                    month9: '9 月', month10: '10 月', month11: '11 月', month12: '12 月',
+                    weeks: { sun: '日', mon: '一', tue: '二', wed: '三', thu: '四', fri: '五', sat: '六' },
+                    months: { jan: '一月', feb: '二月', mar: '三月', apr: '四月', may: '五月', jun: '六月', jul: '七月', aug: '八月', sep: '九月', oct: '十月', nov: '十一月', dec: '十二月' }
+                },
+                select: { loading: '加载中', noMatch: '无匹配数据', noData: '无数据', placeholder: '请选择' },
+                cascader: { noMatch: '无匹配数据', loading: '加载中', placeholder: '请选择', noData: '暂无数据' },
+                pagination: { goto: '前往', pagesize: '条/页', total: '共 {total} 条', pageClassifier: '页', deprecationWarning: '你使用了一些已被废弃的用法，请参考 el-pagination 的官方文档' },
+                messagebox: { title: '提示', confirm: '确定', cancel: '取消', error: '输入的数据不合法!' },
+                upload: { deleteTip: '按 delete 键可删除', delete: '删除', preview: '查看图片', continue: '继续上传' },
+                table: { emptyText: '暂无数据', confirmFilter: '筛选', resetFilter: '重置', clearFilter: '全部', sumText: '合计' },
+                tree: { emptyText: '暂无数据' },
+                transfer: { noMatch: '无匹配数据', noData: '无数据', titles: ['列表 1', '列表 2'], filterPlaceholder: '请输入搜索内容', noCheckedFormat: '共 {total} 项', hasCheckedFormat: '已选 {checked}/{total} 项' },
+                image: { error: '加载失败' },
+                pageHeader: { title: '返回' },
+                popconfirm: { confirmButtonText: '确定', cancelButtonText: '取消' }
+            }
+        };
+    </script>
+    <!-- Chart.js -->
+    <script src="https://cdn.bootcdn.net/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+    <!-- SortableJS -->
+    <script src="https://cdn.bootcdn.net/ajax/libs/Sortable/1.15.0/Sortable.min.js"></script>
+    <!-- Google Fonts: JetBrains Mono & Share Tech Mono -->
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700;800&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #05070a;
+            --card-bg: #0b0e14;
+            --primary-color: #00f2ff;
+            --profit-color: #ff4d4f; /* 标准红 */
+            --loss-color: #00ff88;   /* 标准绿 */
+            --text-primary: #e2e8f0;
+            --text-secondary: #94a3b8;
+            --border-color: rgba(0, 242, 255, 0.15);
+            --glow-shadow: 0 0 20px rgba(0, 242, 255, 0.15);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            cursor: default;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            font-family: 'Inter', 'Segoe UI', sans-serif;
+            min-height: 100vh;
+            overflow-x: hidden;
+            background-image: 
+                radial-gradient(circle at 50% 0%, rgba(0, 242, 255, 0.05) 0%, transparent 50%),
+                radial-gradient(circle at 100% 100%, rgba(168, 85, 247, 0.03) 0%, transparent 50%);
+        }
+
+        #app {
+            padding: 20px;
+            min-height: 100vh;
+        }
+
+        .container {
+            width: 100%;
+            margin: 0 auto;
+        }
+
+        /* 科技感卡片 */
+        .card {
+            background: #0b0e14; /* 统一为黑色的框 */
+            border-radius: 4px;
+            border: 1px solid var(--border-color);
+            margin-bottom: 20px;
+            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+        }
+
+        .card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, var(--primary-color), transparent);
+            transform: translateX(-100%);
+            transition: transform 0.8s;
+            z-index: 1;
+        }
+
+        .card:hover {
+            transform: translateY(-2px);
+            border-color: rgba(0, 242, 255, 0.4);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6), 0 0 10px rgba(0, 242, 255, 0.1);
+        }
+
+        .card:hover::before {
+            transform: translateX(100%);
+        }
+
+        /* 扫描线效果 */
+        .card::after {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.05) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.01), rgba(0, 255, 0, 0.005), rgba(0, 0, 255, 0.01));
+            z-index: 2;
+            background-size: 100% 2px, 3px 100%;
+            pointer-events: none;
+            opacity: 0.3;
+        }
+
+        /* 统计卡片优化 */
+        .stat-card {
+            background: rgba(255, 255, 255, 0.02);
+            border-radius: 4px;
+            padding: 20px;
+            text-align: left;
+            border: 1px solid var(--border-color);
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .stat-card:hover {
+            background: rgba(255, 255, 255, 0.05);
+            box-shadow: var(--glow-shadow);
+            border-color: var(--primary-color);
+        }
+
+        .stat-label {
+            font-size: 11px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            margin-bottom: 12px;
+            font-family: 'Share Tech Mono', monospace;
+        }
+
+        .stat-value {
+            font-size: 28px;
+            font-weight: 800;
+            font-family: 'Share Tech Mono', monospace;
+            text-shadow: 0 0 10px rgba(255, 255, 255, 0.1);
+            letter-spacing: -0.5px;
+        }
+
+        /* 盈亏颜色 */
+        .profit { color: var(--profit-color) !important; text-shadow: 0 0 10px rgba(255, 77, 79, 0.3); }
+        .loss { color: var(--loss-color) !important; text-shadow: 0 0 10px rgba(0, 255, 136, 0.3); }
+        .text-cyan { color: var(--primary-color); text-shadow: 0 0 15px rgba(0, 242, 255, 0.4); }
+        .text-purple { color: #a855f7; }
+
+        /* Element Plus 覆盖样式 */
+        .el-card {
+            background: transparent !important;
+            border: none !important;
+            color: var(--text-primary) !important;
+        }
+
+        .el-table {
+            background-color: #0b0e14 !important;
+            color: var(--text-primary) !important;
+            font-family: 'JetBrains Mono', monospace;
+            border: 1px solid var(--border-color) !important;
+        }
+
+        .el-table tr, .el-table th.el-table__cell, .el-table td.el-table__cell {
+            background-color: #0b0e14 !important;
+            color: var(--text-primary) !important;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05) !important;
+        }
+
+        .el-table__header, .el-table__body {
+            table-layout: fixed !important;
+            width: 100% !important;
+        }
+
+        .el-table th.el-table__cell {
+            background-color: #151921 !important;
+            color: var(--text-secondary) !important;
+            font-weight: 600 !important;
+            font-size: 12px;
+            letter-spacing: 1px;
+            font-family: 'Share Tech Mono', monospace;
+        }
+
+        .el-table th.el-table__cell, 
+        .el-table td.el-table__cell {
+            padding: 8px 0 !important;
+            box-sizing: border-box !important;
+        }
+
+        .el-table .cell {
+            white-space: nowrap !important;
+            padding: 0 12px !important;
+            line-height: 24px !important;
+            box-sizing: border-box !important;
+        }
+
+        /* 修复表头可能出现的堆叠或对齐问题 */
+        .el-table__header-wrapper, .el-table__body-wrapper {
+            width: 100% !important;
+        }
+
+        .el-input__wrapper, .el-select__wrapper {
+            background-color: rgba(255, 255, 255, 0.03) !important;
+            box-shadow: none !important;
+            border: 1px solid var(--border-color) !important;
+            border-radius: 2px !important;
+        }
+
+        .el-input__wrapper:hover, .el-select__wrapper:hover {
+            border-color: var(--primary-color) !important;
+        }
+
+        .el-input__inner, .el-select__placeholder {
+            color: var(--text-primary) !important;
+            font-family: 'Share Tech Mono', monospace !important;
+        }
+
+        /* 下拉弹层深色化（账号选择等 el-select 下拉，匹配深色主题） */
+        .el-select__popper.el-popper {
+            background: var(--card-bg) !important;
+            border: 1px solid var(--border-color) !important;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6) !important;
+        }
+        .el-select__popper .el-popper__arrow::before {
+            background: var(--card-bg) !important;
+            border: 1px solid var(--border-color) !important;
+        }
+        .el-select-dropdown {
+            background: var(--card-bg) !important;
+        }
+        .el-select-dropdown__item {
+            color: var(--text-primary) !important;
+        }
+        .el-select-dropdown__item.hover,
+        .el-select-dropdown__item:hover {
+            background-color: rgba(0, 242, 255, 0.08) !important;
+        }
+        .el-select-dropdown__item.selected {
+            color: var(--primary-color) !important;
+            background-color: rgba(0, 242, 255, 0.12) !important;
+        }
+
+        /* Tabs 优化 */
+        .el-tabs__item {
+            color: var(--text-secondary) !important;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 12px;
+            letter-spacing: 1px;
+        }
+
+        .el-tabs__item.is-active {
+            color: var(--primary-color) !important;
+            text-shadow: 0 0 10px rgba(0, 242, 255, 0.5);
+        }
+
+        .el-tabs__active-bar {
+            background-color: var(--primary-color) !important;
+            box-shadow: 0 0 10px var(--primary-color);
+        }
+
+        .el-tabs__nav-wrap::after {
+            background-color: var(--border-color) !important;
+        }
+
+        /* Dialog 优化 */
+        .el-dialog {
+            background: var(--bg-color) !important;
+            border: 1px solid var(--primary-color) !important;
+            box-shadow: 0 0 30px rgba(0, 242, 255, 0.2) !important;
+            backdrop-filter: blur(20px);
+        }
+
+        .el-dialog__title {
+            color: var(--primary-color) !important;
+            font-family: 'Share Tech Mono', monospace;
+            letter-spacing: 2px;
+            font-weight: 800;
+        }
+
+        .el-dialog__body {
+            color: var(--text-primary) !important;
+        }
+
+        /* 头部样式 */
+        .header-width-slider { display: flex; }
+        @media (max-width: 600px) {
+            .header-width-slider { display: none !important; }
+            .header-account-select { width: 120px !important; }
+            .header-controls { gap: 8px !important; }
+        }
+
+        .dashboard-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+            padding: 20px;
+            background: linear-gradient(90deg, rgba(23, 27, 34, 0.9), transparent);
+            border-radius: 4px;
+            border-left: 2px solid var(--primary-color);
+            position: relative;
+        }
+
+        .header-title h1 {
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 26px;
+            font-weight: 900;
+            letter-spacing: 2px;
+            background: linear-gradient(90deg, #fff, var(--primary-color));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        /* 状态灯 */
+        .status-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            background: var(--profit-color);
+            border-radius: 50%;
+            margin-right: 8px;
+            box-shadow: 0 0 10px var(--profit-color);
+        }
+
+        /* 交易日历科技感优化 */
+        .calendar-grid {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            gap: 2px;
+        }
+
+        .calendar-header-day {
+            text-align: center;
+            font-size: 10px;
+            color: var(--text-secondary);
+            opacity: 0.5;
+            padding-bottom: 5px;
+            font-family: 'Share Tech Mono', monospace;
+        }
+
+        .calendar-day {
+            aspect-ratio: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            background: rgba(255, 255, 255, 0.01);
+            border: 1px solid rgba(255, 255, 255, 0.03);
+            transition: all 0.3s;
+            font-family: 'Share Tech Mono', monospace;
+            color: var(--text-secondary);
+            position: relative;
+            padding: 2px;
+            line-height: 1;
+        }
+
+        .calendar-day.other-month {
+            opacity: 0.2;
+        }
+
+        .day-num {
+            font-size: 10px;
+            margin-bottom: 1px;
+        }
+
+        .day-stats {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            width: 100%;
+            overflow: hidden;
+        }
+
+        .day-ratio {
+            font-size: 7px;
+            opacity: 0.6;
+        }
+
+        .day-profit {
+            font-size: 12px;
+            font-weight: bold;
+        }
+
+        .calendar-day.has-trade {
+            border-color: rgba(0, 242, 255, 0.3);
+        }
+
+        .trade-dot {
+            position: absolute;
+            bottom: 2px;
+            right: 2px;
+            width: 3px;
+            height: 3px;
+            background: var(--primary-color);
+            border-radius: 50%;
+            box-shadow: 0 0 5px var(--primary-color);
+        }
+
+        .calendar-day.today {
+            background: rgba(0, 242, 255, 0.2);
+            color: var(--primary-color);
+            font-weight: 900;
+            box-shadow: inset 0 0 10px rgba(0, 242, 255, 0.1);
+            border-color: var(--primary-color);
+        }
+
+        .calendar-day.active {
+            border: 1px solid var(--primary-color);
+            background: rgba(0, 242, 255, 0.3);
+            color: #fff;
+            transform: scale(1.05);
+            z-index: 1;
+            box-shadow: 0 0 15px rgba(0, 242, 255, 0.4);
+        }
+
+        .calendar-day:hover {
+            background: rgba(255, 255, 255, 0.05);
+            cursor: pointer;
+            border-color: var(--primary-color);
+        }
+
+        /* 滚动条美化 */
+        ::-webkit-scrollbar {
+            width: 4px;
+            height: 4px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 2px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--primary-color);
+        }
+
+        /* 图表容器 */
+        .chart-container {
+            height: 350px;
+            padding: 20px;
+            background: rgba(0, 0, 0, 0.15);
+        }
+
+        .refresh-indicator {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: var(--primary-color);
+            color: #000;
+            padding: 6px 12px;
+            border-radius: 2px;
+            font-weight: 800;
+            font-size: 10px;
+            z-index: 2000;
+            box-shadow: 0 0 20px var(--primary-color);
+            font-family: 'Share Tech Mono', monospace;
+        }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <!-- 数据刷新指示器 -->
+        <div v-if="showRefreshIndicator" class="refresh-indicator">
+            数据已更新: {{ lastUpdateTime }}
+        </div>
+
+        <!-- ============ 观察者(viewer)专属页面：只有历史买入列表，只读 ============ -->
+        <div v-if="isAuthenticated && isViewer" class="container" style="max-width: 1180px;">
+            <div class="dashboard-header">
+                <div class="header-title">
+                    <h1 style="font-size: 22px; font-weight: 900; letter-spacing: 1px;">历史买入列表</h1>
+                    <span style="font-size: 12px; color: var(--text-secondary);">{{ marketDataTradeDate || '今日' }} 报出 {{ marketDataRecords.length }} 只 · 每5秒自动刷新</span>
+                </div>
+                <div class="header-controls" style="display: flex; align-items: center; gap: 12px;">
+                    <el-button size="small" :type="viewerNotifyOn ? 'success' : 'default'" @click="toggleViewerNotify">
+                        {{ viewerNotifyOn ? '🔔 新报出通知：开' : '🔔 开启新报出通知' }}
+                    </el-button>
+                    <el-button size="small" @click="loadMarketDataToday(false)" :loading="marketDataLoading">刷新</el-button>
+                    <span style="color: var(--text-secondary); font-size: 13px; font-family: 'Share Tech Mono', monospace;">{{ viewerUsername }}</span>
+                    <el-button size="small" @click="handleLogout">退出</el-button>
+                </div>
+            </div>
+            <div class="card" style="margin-top: 16px;">
+                <div style="padding: 0 10px;">
+                    <el-table :data="marketDataRecords" size="small" style="width: 100%;" max-height="80vh"
+                              empty-text="今日暂无报出数据" v-loading="marketDataLoading">
+                        <el-table-column prop="stock_name" label="名称" width="92" fixed>
+                            <template #default="{ row }">
+                                <span @click="goToStockDetail(row.ts_code || row.stock_code)" style="font-weight: bold; color: #fff; cursor: pointer; text-decoration: underline dotted rgba(255,255,255,0.3);" title="在雪球查看K线">{{ row.stock_name || '--' }}</span>
+                                <div style="font-size: 11px; color: var(--text-secondary); font-family: monospace;">{{ row.stock_code }}</div>
+                            </template>
+                        </el-table-column>
+                        <el-table-column prop="dynamic_change" label="实时涨幅" width="90" align="right" sortable>
+                            <template #default="{ row }">
+                                <span v-if="row.dynamic_change != null" :class="Number(row.dynamic_change) >= 0 ? 'profit' : 'loss'" style="font-weight: 800;">{{ formatPercent(row.dynamic_change) }}</span>
+                                <span v-else style="color: var(--text-secondary);">--</span>
+                            </template>
+                        </el-table-column>
+                        <el-table-column prop="current_change" label="报出涨幅" width="86" align="right" sortable>
+                            <template #default="{ row }">
+                                <span :class="Number(row.current_change) >= 0 ? 'profit' : 'loss'">{{ formatPercent(row.current_change) }}</span>
+                            </template>
+                        </el-table-column>
+                        <el-table-column prop="latest_price" label="最新价" width="80" align="right" sortable>
+                            <template #default="{ row }">{{ row.latest_price != null ? Number(row.latest_price).toFixed(2) : '--' }}</template>
+                        </el-table-column>
+                        <el-table-column prop="topic" label="题材" min-width="140" show-overflow-tooltip>
+                            <template #default="{ row }"><span style="color: var(--primary-color);">{{ row.topic || '--' }}</span></template>
+                        </el-table-column>
+                        <el-table-column prop="market_value_yi" label="市值" width="84" align="right" sortable>
+                            <template #default="{ row }">{{ formatYi(row.market_value_yi) }}</template>
+                        </el-table-column>
+                        <el-table-column prop="report_count_7d" label="7日报出" width="80" align="center" sortable>
+                            <template #default="{ row }">
+                                <span :style="{ color: Number(row.report_count_7d) > 1 ? 'var(--primary-color)' : 'var(--text-secondary)', fontWeight: Number(row.report_count_7d) > 1 ? 800 : 400 }">{{ row.report_count_7d }} 次</span>
+                            </template>
+                        </el-table-column>
+                        <el-table-column prop="update_time" label="报出时间" width="150" sortable show-overflow-tooltip></el-table-column>
+                    </el-table>
+                </div>
+            </div>
+        </div>
+
+        <div class="container" v-if="!isViewer" :style="{ maxWidth: containerMaxWidth + 'px' }">
+            <!-- 顶部导航栏 -->
+            <div class="dashboard-header">
+                <div class="header-title">
+                    <h1>量化交易看板 <span style="font-size: 12px; font-weight: 300; opacity: 0.6; letter-spacing: 2px;">V2.0</span></h1>
+                    <p style="font-size: 11px; color: var(--text-secondary); margin-top: 4px; font-family: 'Share Tech Mono', monospace;">
+                        系统状态: <span class="status-dot" :style="{ background: systemStatus.color, boxShadow: '0 0 10px ' + systemStatus.color }"></span><span :style="{ color: systemStatus.color }">{{ systemStatus.text }}</span> | 
+                        最近同步: {{ updateTime }} ({{ secondsSinceUpdate }}s前)
+                        <el-button :loading="manualRefreshing" size="small" link type="primary" @click="manualRefresh" style="padding: 0 4px; margin-left: 8px; vertical-align: middle; font-family: inherit; font-size: 11px;">手动刷新</el-button>
+                    </p>
+                </div>
+
+                <div class="header-controls" style="display: flex; align-items: center; gap: 15px;">
+                    <!-- 页面宽度调节 -->
+                    <div class="header-width-slider" style="display: flex; align-items: center; gap: 6px; padding: 4px 10px; background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 4px; min-width: 180px;">
+                        <span style="font-size: 10px; color: var(--text-secondary); font-family: 'Share Tech Mono', monospace; white-space: nowrap;">◀</span>
+                        <el-slider v-model="containerMaxWidth" :min="1000" :max="3200" :step="100" style="flex: 1;" size="small" :show-tooltip="false" />
+                        <span style="font-size: 10px; color: var(--text-secondary); font-family: 'Share Tech Mono', monospace; white-space: nowrap;">▶</span>
+                        <span style="font-size: 10px; color: var(--primary-color); font-family: 'Share Tech Mono', monospace; min-width: 42px; text-align: right;">{{ containerMaxWidth }}</span>
+                    </div>
+                    <!-- 账号信息 (点击修改别名) -->
+                    <template v-if="isAuthenticated && currentAccountId">
+                        <div 
+                            style="text-align: right; margin-right: 10px; user-select: none;" 
+                            :style="{ cursor: currentAccountId === 'all' ? 'default' : 'pointer' }"
+                            @click="openAliasDialog"
+                            :title="currentAccountId === 'all' ? '所有账号汇总视图' : '点击修改账号别名'"
+                        >
+                            <div style="font-size: 10px; color: var(--text-secondary);">账号别名</div>
+                            <div style="font-size: 14px; font-weight: 800; color: var(--primary-color); display: flex; align-items: center; gap: 4px; justify-content: flex-end;">
+                                <el-icon size="14"><User /></el-icon>
+                                {{ currentAccount.alias || currentAccountId }}
+                                <span style="font-size: 10px; opacity: 0.6; font-weight: 400; font-family: 'Share Tech Mono', monospace;">({{ getAccountTypeName(asset.account_type) }})</span>
+                            </div>
+                        </div>
+                    </template>
+
+                    <!-- 用户选择 -->
+                    <el-select v-model="currentAccountId" placeholder="选择账户" @change="handleUserChange"
+                               class="header-account-select" style="width: 180px;" :disabled="!isAuthenticated">
+                        <el-option v-for="(user, idx) in sortedUsers" :key="(user && user.account_id) ? user.account_id : idx" :value="user && user.account_id ? user.account_id : ''">
+                            <template #default>
+                                <div style="display:flex; align-items:center; gap:8px; height:24px;">
+                                    <span class="status-dot" :style="{ width: '10px', height: '10px', background: (user && user.online === null) ? '#999' : (user && user.online ? '#20c997' : '#ef4444'), boxShadow: '0 0 6px ' + ((user && user.online) ? '#20c997' : ((user && user.online === null) ? '#999' : '#ef4444')) }"></span>
+                                    <span v-if="user && user.buy_stopped && user.account_id !== 'all'" class="status-dot" style="width: 8px; height: 8px; background: #f59e0b; border-radius: 2px; box-shadow: 0 0 6px #f59e0b;" title="已停止买入"></span>
+                                    <span v-if="user && user.sell_stopped && user.account_id !== 'all'" class="status-dot" style="width: 8px; height: 8px; background: #ef4444; border-radius: 2px; box-shadow: 0 0 6px #ef4444;" title="已停止卖出"></span>
+                                    <span style="line-height:1; color:inherit">{{ (user && (user.alias || user.account_id)) ? (user.alias || user.account_id) : 'unknown' }}</span>
+                                    <span v-if="user && user.is_dormant" style="font-size:10px; color:#94a3b8; background:rgba(148,163,184,0.15); padding:1px 4px; border-radius:3px; margin-left:2px;">休眠</span>
+                                    <span v-if="user && user.today_profit_rate !== null && user.today_profit_rate !== undefined" :class="Number(user.today_profit_rate) >= 0 ? 'profit' : 'loss'" style="margin-left:auto; font-size:11px; font-family:'Share Tech Mono', monospace;">{{ Number(user.today_profit_rate) >= 0 ? '+' : '' }}{{ Number(user.today_profit_rate).toFixed(2) }}%</span>
+                                </div>
+                            </template>
+                        </el-option>
+                    </el-select>
+                    <!-- 停止买入 / 恢复买入按钮（展示模式下隐藏） -->
+                    <template v-if="isAuthenticated && currentAccountId && !displayMode">
+                        <el-popconfirm
+                            v-if="!buyStopped"
+                            :title="currentAccountId === 'all' ? '确定要停止所有账号的买入吗？将撤销所有买入挂单并暂停自动买入' : '确定要停止买入吗？将撤销所有买入挂单并暂停自动买入'"
+                            confirm-button-text="确定停止"
+                            cancel-button-text="取消"
+                            @confirm="submitStopBuying"
+                        >
+                            <template #reference>
+                                <el-button size="small" type="warning" plain>停止买入</el-button>
+                            </template>
+                        </el-popconfirm>
+                        <el-popconfirm
+                            v-else
+                            :title="currentAccountId === 'all' ? '确定要恢复所有账号的买入吗？将重新启用自动买入' : '确定要恢复买入吗？将重新启用自动买入'"
+                            confirm-button-text="确定恢复"
+                            cancel-button-text="取消"
+                            @confirm="submitResumeBuying"
+                        >
+                            <template #reference>
+                                <el-button size="small" type="success" plain>恢复买入</el-button>
+                            </template>
+                        </el-popconfirm>
+
+                        <!-- 停止卖出 / 恢复卖出按钮 -->
+                        <el-popconfirm
+                            v-if="!sellStopped"
+                            :title="currentAccountId === 'all' ? '确定要停止所有账号的卖出吗？将撤销所有卖出挂单并暂停自动卖出' : '确定要停止卖出吗？将撤销所有卖出挂单并暂停自动卖出'"
+                            confirm-button-text="确定停止"
+                            cancel-button-text="取消"
+                            @confirm="submitStopSelling"
+                        >
+                            <template #reference>
+                                <el-button size="small" type="danger" plain>停止卖出</el-button>
+                            </template>
+                        </el-popconfirm>
+                        <el-popconfirm
+                            v-else
+                            :title="currentAccountId === 'all' ? '确定要恢复所有账号的卖出吗？将重新启用自动卖出' : '确定要恢复卖出吗？将重新启用自动卖出'"
+                            confirm-button-text="确定恢复"
+                            cancel-button-text="取消"
+                            @confirm="submitResumeSelling"
+                        >
+                            <template #reference>
+                                <el-button size="small" type="success" plain>恢复卖出</el-button>
+                            </template>
+                        </el-popconfirm>
+                    </template>
+
+                    <el-button
+                        v-if="isAuthenticated && currentAccountId"
+                        size="small"
+                        type="primary"
+                        plain
+                        :loading="tScanLoading"
+                        @click="openTScanDialog"
+                        title="扫描今日成交并估算可做T机会">
+                        T扫描
+                    </el-button>
+
+                    <!-- 排序按钮 -->
+                    <el-button v-if="isAuthenticated && currentUser?.role === 'admin'" 
+                               @click="openUserSortDialog" 
+                               size="small" 
+                               type="info" 
+                               plain
+                               title="调整账号顺序">
+                        <el-icon><Sort /></el-icon>
+                    </el-button>
+
+                    <!-- 重新获取K线按钮 -->
+                    <el-button v-if="isAuthenticated && currentUser?.role === 'admin'"
+                               @click="refreshAllKline"
+                               size="small"
+                               type="warning"
+                               plain
+                               title="重新获取所有持仓股票的K线数据">
+                        <el-icon><RefreshRight /></el-icon> K线
+                    </el-button>
+
+                    <!-- 登录/退出按钮 -->
+                    <template v-if="!isAuthenticated">
+                        <el-button type="primary" @click="showLoginDialog = true" plain>登录</el-button>
+                    </template>
+                    <template v-else>
+                        <div style="display: flex; align-items: center; gap: 12px; margin-right: 10px;">
+                            <div v-if="currentUser?.role === 'admin'"
+                                 style="cursor: pointer; text-align: center;"
+                                 @click="toggleDisplayMode(!displayMode)"
+                                 title="展示模式（全局）：开启后服务端停止下发买入/卖出/锁定/做T/清仓指令，整套部署只读展示">
+                                <div style="font-size: 10px; color: var(--text-secondary);">展示模式 <el-icon><View /></el-icon></div>
+                                <div style="font-size: 12px; font-weight: 700;" :style="{ color: displayMode ? 'var(--primary-color)' : 'var(--text-secondary)' }">{{ displayMode ? '已开启' : '已关闭' }}</div>
+                            </div>
+                            <div v-if="currentUser?.role === 'admin'"
+                                 style="cursor: pointer; text-align: center;"
+                                 @click="openConfigDialog()"
+                                 title="远程管理 QMT 策略配置">
+                                <div style="font-size: 10px; color: var(--text-secondary);">远程配置 <el-icon><Tools /></el-icon></div>
+                                <div style="font-size: 12px; color: #eab308; font-weight: 700;">strategy.ini</div>
+                            </div>
+                            <div style="text-align: right; cursor: pointer;" @click="showUserManagementDialog = true; loadAdminUsers(); loadLLMConfig(); loadUserStats()" title="用户管理与安全设置">
+                                <div style="font-size: 10px; color: var(--text-secondary);">操作员 <el-icon><Setting /></el-icon></div>
+                                <div style="font-size: 14px; font-weight: 800; color: var(--primary-color);">{{ currentUser?.username }}</div>
+                            </div>
+                        </div>
+                        <el-button @click="handleLogout" size="small" type="info" plain>退出</el-button>
+                    </template>
+                </div>
+            </div>
+
+            <!-- 所有账号汇总时显示断线账户和停止交易账户 -->
+            <div v-if="currentAccountId === 'all'" style="margin: 12px 0; padding: 8px; border-radius: 6px; background: #0f1724;">
+                <div style="font-size:12px; color:var(--text-secondary); margin-bottom:6px;">断线 / 数据延迟账户：</div>
+                <div style="display:flex; gap:12px; flex-wrap:wrap;">
+                    <template v-for="(u, idx) in users" :key="(u && u.account_id) ? u.account_id : idx">
+                        <div v-if="u && u.account_id !== 'all' && !u.account_id.startsWith('ADMIN_') && (u.online !== true || u.data_delayed === true || u.buy_stopped || u.sell_stopped)" style="display:flex; align-items:center; gap:8px; padding:4px 8px; background: rgba(255,255,255,0.02); border-radius:4px;">
+                            <span class="status-dot" :style="{ background: u.online === false ? '#ef4444' : (u.data_delayed ? '#f59e0b' : '#999'), boxShadow: '0 0 6px ' + (u.online === false ? '#ef4444' : (u.data_delayed ? '#f59e0b' : '#999')) }"></span>
+                            <span v-if="u.buy_stopped" class="status-dot" style="width: 8px; height: 8px; background: #f59e0b; border-radius: 2px; box-shadow: 0 0 6px #f59e0b;" title="已停止买入"></span>
+                            <span v-if="u.sell_stopped" class="status-dot" style="width: 8px; height: 8px; background: #ef4444; border-radius: 2px; box-shadow: 0 0 6px #ef4444;" title="已停止卖出"></span>
+                            <div style="font-size:13px; color:#cbd5e1;">{{ u.alias || u.account_id }}</div>
+                            <span v-if="u.data_delayed && u.online !== false" style="font-size:11px; color:#f59e0b; background:rgba(245,158,11,0.12); padding:1px 5px; border-radius:3px;">行情延迟</span>
+                            <span v-if="u.buy_stopped" style="font-size:11px; color:#f59e0b; background:rgba(245,158,11,0.12); padding:1px 5px; border-radius:3px;">停止买入</span>
+                            <span v-if="u.sell_stopped" style="font-size:11px; color:#ef4444; background:rgba(239,68,68,0.12); padding:1px 5px; border-radius:3px;">停止卖出</span>
+                            <span v-if="u.data_delayed && u.data_time" style="font-size:11px; color:#94a3b8;">{{ u.data_time }}</span>
+                        </div>
+                    </template>
+                    <div v-if="!users.some(u => u && u.account_id !== 'all' && !u.account_id.startsWith('ADMIN_') && (u.online !== true || u.data_delayed === true || u.buy_stopped || u.sell_stopped))" style="font-size:13px; color:#20c997;">
+                        所有账户均在线
+                    </div>
+                </div>
+            </div>
+
+            <div v-if="isAuthenticated && currentAccountId && (currentAccountId !== 'all' || currentUser?.role === 'admin')"
+                 class="card"
+                 v-loading="tradeFactorsLoading"
+                 style="margin-bottom: 18px; padding: 18px 20px;">
+                <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap;">
+                    <div>
+                        <div style="font-size: 16px; font-weight: 800; color: var(--text-primary);">开仓参数下发</div>
+                        <div style="font-size: 12px; color: var(--text-secondary); margin-top: 6px; line-height: 1.7;">
+                            <span v-if="currentAccountId === 'all'">当前在所有账号汇总视图，保存后将统一下发到 {{ tradeFactorsAccountCount }} 个账号。</span>
+                            <span v-else>当前目标账号：{{ currentAccount?.alias || currentAccount?.account_id || currentAccountId }}。</span>
+                            <span style="display:block;">接收端会将“开仓金额”和“开仓数量”分别乘以这两个参数，允许范围 0 到 1.5。</span>
+                        </div>
+                        <div v-if="tradeFactorsMixed" style="margin-top: 8px; font-size: 12px; color: #f59e0b;">
+                            当前账号组存在不同参数值。输入新值并保存后，将统一覆盖
+                            {{ tradeFactorsMixedFields.includes('position_factor') && tradeFactorsMixedFields.includes('open_count_factor') ? '仓位参数和开仓数量参数' : (tradeFactorsMixedFields.includes('position_factor') ? '仓位参数' : '开仓数量参数') }}。
+                        </div>
+                    </div>
+                    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                        <div>
+                            <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;">仓位参数</div>
+                            <el-input-number
+                                v-model="tradeFactorForm.positionFactor"
+                                :min="0"
+                                :max="1.5"
+                                :step="0.05"
+                                :precision="2"
+                                controls-position="right"
+                                style="width: 150px;"
+                            ></el-input-number>
+                        </div>
+                        <div>
+                            <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;">开仓数量参数</div>
+                            <el-input-number
+                                v-model="tradeFactorForm.openCountFactor"
+                                :min="0"
+                                :max="1.5"
+                                :step="0.05"
+                                :precision="2"
+                                controls-position="right"
+                                style="width: 150px;"
+                            ></el-input-number>
+                        </div>
+                        <el-button type="primary" :loading="tradeFactorsSaving" @click="saveTradeFactors">保存并下发</el-button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 未登录只显示顶部登录入口；登录后才显示下面整个看板主体 -->
+            <template v-if="isAuthenticated">
+            <!-- 统计卡片 -->
+            <el-row :gutter="20" style="margin-bottom: 30px;">
+                <el-col :xs="12" :sm="4">
+                    <div class="stat-card" @click="showClearPositionsTag = !showClearPositionsTag" style="cursor: pointer;">
+                        <div class="stat-label">总资产</div>
+                        <div class="stat-value text-cyan">{{ formatMoney(asset.total_asset || 0) }}</div>
+                    </div>
+                </el-col>
+                <el-col :xs="12" :sm="4">
+                    <div class="stat-card">
+                        <div class="stat-label">证券市值</div>
+                        <div class="stat-value text-cyan">{{ formatMoney(asset.market_value || 0) }}</div>
+                    </div>
+                </el-col>
+                <el-col :xs="12" :sm="4">
+                    <div class="stat-card">
+                        <div class="stat-label">可用资金</div>
+                        <div class="stat-value" style="color: #eab308;">{{ formatMoney(asset.cash || 0) }}</div>
+                    </div>
+                </el-col>
+                <el-col :xs="12" :sm="4">
+                    <div class="stat-card">
+                        <div class="stat-label" style="display:flex; align-items:center; justify-content:space-between;">
+                            <span>当日盈亏</span>
+                            <el-tooltip v-if="currentUser?.role === 'admin'" content="修正因新增账户导致的当日盈亏偏差" placement="top">
+                                <el-button
+                                    size="small" type="info" plain circle
+                                    style="width:18px; height:18px; padding:0; font-size:10px; min-height:0; border:none; color:#94a3b8;"
+                                    @click.stop="recalculateTodayProfit">
+                                    <el-icon><RefreshRight /></el-icon>
+                                </el-button>
+                            </el-tooltip>
+                        </div>
+                        <div class="stat-value" :class="todayProfit >= 0 ? 'profit' : 'loss'">
+                            {{ todayProfit >= 0 ? '+' : '' }}{{ formatMoney(todayProfit) }}
+                            <span style="font-size: 10px; margin-left: 4px;">({{ todayProfitRate >= 0 ? '+' : '' }}{{ todayProfitRate.toFixed(2) }}%)</span>
+                        </div>
+                    </div>
+                </el-col>
+                <el-col :xs="12" :sm="4">
+                    <div class="stat-card" @click="showAdjustmentDialog = true" style="cursor: pointer;">
+                        <div class="stat-label">累计盈亏</div>
+                        <div class="stat-value" :class="totalProfit >= 0 ? 'profit' : 'loss'">
+                            {{ totalProfit >= 0 ? '+' : '' }}{{ formatMoney(totalProfit) }}
+                        </div>
+                    </div>
+                </el-col>
+                <el-col :xs="12" :sm="4">
+                    <div class="stat-card" @click="showAdjustmentDialog = true" style="cursor: pointer;">
+                        <div class="stat-label">累计收益率</div>
+                        <div class="stat-value" :class="totalProfitRate >= 0 ? 'profit' : 'loss'">
+                            {{ totalProfitRate >= 0 ? '+' : '' }}{{ totalProfitRate.toFixed(2) }}%
+                        </div>
+                    </div>
+                </el-col>
+                <el-col :xs="12" :sm="4" v-if="showClearPositionsTag && currentAccountId !== 'all' && !displayMode">
+                    <div class="stat-card" @click="showClearPositionsDialog = true" style="cursor: pointer; border: 1px dashed rgba(239, 68, 68, 0.3); background: rgba(239, 68, 68, 0.05);">
+                        <div class="stat-label" style="color: var(--loss-color);">一键操作</div>
+                        <div class="stat-value" style="color: var(--loss-color); font-size: 14px; font-weight: 800; letter-spacing: 1px;">
+                            <el-icon><Delete /></el-icon> 一键清仓
+                        </div>
+                    </div>
+                </el-col>
+                <el-col :xs="12" :sm="4" v-if="showClearPositionsTag && currentUser?.role === 'admin' && !displayMode">
+                    <div class="stat-card" @click="showClearAllDialog = true" style="cursor: pointer; border: 1px dashed rgba(239, 68, 68, 0.6); background: rgba(239, 68, 68, 0.1);">
+                        <div class="stat-label" style="color: var(--loss-color);">管理员操作</div>
+                        <div class="stat-value" style="color: var(--loss-color); font-size: 14px; font-weight: 800; letter-spacing: 1px;">
+                            <el-icon><Delete /></el-icon> 全账号清仓
+                        </div>
+                    </div>
+                </el-col>
+            </el-row>
+
+            <!-- 主内容区 -->
+            <el-row :gutter="20">
+                <!-- 左侧：持仓情况 -->
+                <el-col :xs="24" :md="16">
+                    <div class="card">
+                        <div style="padding: 20px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <h3 style="font-size: 16px; font-weight: 800; letter-spacing: 1px; margin: 0;">持仓详情 <span style="color: var(--primary-color)">({{ activePositionCount }}/{{ positions.length }})</span></h3>
+                                <el-tooltip content="买入新股票" placement="top" v-if="!displayMode">
+                                    <el-button
+                                        link
+                                        type="danger"
+                                        @click="openNewBuyDialog"
+                                        style="font-size: 18px; font-weight: bold; padding: 0;">
+                                        <el-icon><Plus /></el-icon>
+                                    </el-button>
+                                </el-tooltip>
+                            </div>
+                            <div style="display: flex; gap: 10px; align-items: center;">
+                                <el-checkbox v-model="hideClearedPositions" border size="small" style="margin-right: 0; color: var(--text-secondary); border-color: var(--border-color);">
+                                    隐藏清仓
+                                </el-checkbox>
+                                <el-input
+                                    v-model="positionSearch"
+                                    placeholder="搜索名称/代码"
+                                    prefix-icon="Search"
+                                    clearable
+                                    style="width: 150px;"
+                                    size="small"
+                                />
+                            </div>
+                        </div>
+                        
+                        <div style="padding: 10px;">
+                            <el-table :data="filteredPositions"
+                                      style="width: 100%; background: transparent;"
+                                      class="position-table"
+                                      row-key="stock_code"
+                                      @sort-change="handleSortChange"
+                                      :default-sort="{prop: 'market_value', order: 'descending'}"
+                                      :sort-orders="['descending', 'ascending', null]">
+                                
+                                <el-table-column v-for="col in visiblePositionColumns"
+                                                 :key="col.prop"
+                                                 :prop="col.prop" 
+                                                 :label="col.label" 
+                                                 :width="col.width"
+                                                 :min-width="col.minWidth"
+                                                 :fixed="col.fixed"
+                                                 :align="col.align || 'left'"
+                                                 :header-align="col.align || 'left'"
+                                                 sortable="custom">
+                                    <template #default="{ row }">
+                                        <!-- 转债：溢价率 -->
+                                        <template v-if="col.prop === 'bond_premium'">
+                                            <span v-if="row.is_bond && row.bond && row.bond.premium_rate !== null"
+                                                  :class="row.bond.premium_rate > 30 ? 'text-red' : ''">
+                                                {{ row.bond.premium_rate.toFixed(2) }}%
+                                            </span>
+                                            <el-tooltip v-else-if="row.is_bond" :content="(row.bond && row.bond.data_gap) || '数据缺失'">
+                                                <span style="color: var(--text-secondary);">—</span>
+                                            </el-tooltip>
+                                            <span v-else></span>
+                                        </template>
+
+                                        <!-- 转债：转股价值 -->
+                                        <template v-else-if="col.prop === 'bond_value'">
+                                            <span v-if="row.is_bond && row.bond && row.bond.conversion_value !== null">
+                                                {{ row.bond.conversion_value.toFixed(2) }}
+                                            </span>
+                                            <span v-else style="color: var(--text-secondary);">{{ row.is_bond ? '—' : '' }}</span>
+                                        </template>
+
+                                        <!-- 转债：强赎进度 -->
+                                        <template v-else-if="col.prop === 'bond_redeem'">
+                                            <template v-if="row.is_bond && row.bond && row.bond.redeem">
+                                                <el-tag v-if="row.bond.redeem.triggered" type="danger" size="small" effect="dark">
+                                                    已触发
+                                                </el-tag>
+                                                <el-tooltip v-else
+                                                            :content="`最近 ${row.bond.redeem.days_counted} 个交易日中 ${row.bond.redeem.hits} 日收盘 ≥ ${row.bond.redeem.trigger_price}，满 ${row.bond.redeem.hits_needed} 日触发强赎`">
+                                                    <span :class="row.bond.redeem.hits >= 10 ? 'text-red' : ''">
+                                                        {{ row.bond.redeem.hits }}/{{ row.bond.redeem.hits_needed }}
+                                                    </span>
+                                                </el-tooltip>
+                                            </template>
+                                            <span v-else style="color: var(--text-secondary);">{{ row.is_bond ? '—' : '' }}</span>
+                                        </template>
+
+                                        <!-- 锁定列 -->
+                                        <template v-else-if="col.prop === 'is_locked'">
+                                            <div style="text-align: center;">
+                                                <el-button
+                                                    link
+                                                    :type="row.is_locked ? 'danger' : 'info'"
+                                                    @click.stop="toggleLock(row)"
+                                                    style="font-size: 16px;">
+                                                    <el-icon><component :is="row.is_locked ? 'Lock' : 'Unlock'" /></el-icon>
+                                                </el-button>
+                                            </div>
+                                        </template>
+
+                                        <!-- 卖出列 -->
+                                        <template v-else-if="col.prop === 'sell_action'">
+                                            <div style="text-align: center;">
+                                                <template v-if="isPendingSell(row)">
+                                                    <el-button
+                                                        link
+                                                        type="warning"
+                                                        @click.stop="cancelSellPosition(row)"
+                                                        style="font-size: 12px;">
+                                                        <el-icon><CircleCheck /></el-icon>
+                                                        <span style="margin-left: 2px;">{{ getPendingSellPercentage(row) }}%</span>
+                                                    </el-button>
+                                                </template>
+                                                <template v-else>
+                                                    <el-button
+                                                        link
+                                                        type="success"
+                                                        @click.stop="openSellPositionDialog(row)"
+                                                        style="font-size: 18px; font-weight: bold;">
+                                                        <el-icon><Minus /></el-icon>
+                                                    </el-button>
+                                                </template>
+                                            </div>
+                                        </template>
+
+                                        <!-- 买入列 -->
+                                        <template v-else-if="col.prop === 'buy_action'">
+                                            <div style="text-align: center;">
+                                                <template v-if="isPendingBuy(row)">
+                                                    <el-button
+                                                        link
+                                                        type="success"
+                                                        @click.stop="cancelBuyPosition(row)"
+                                                        style="font-size: 12px;">
+                                                        <el-icon><CircleCheck /></el-icon>
+                                                        <span style="margin-left: 2px;">{{ getPendingBuyPercentage(row) }}%</span>
+                                                    </el-button>
+                                                </template>
+                                                <template v-else>
+                                                    <el-button
+                                                        link
+                                                        type="danger"
+                                                        @click.stop="openBuyPositionDialog(row)"
+                                                        style="font-size: 18px; font-weight: bold;">
+                                                        <el-icon><Plus /></el-icon>
+                                                    </el-button>
+                                                </template>
+                                            </div>
+                                        </template>
+
+                                        <!-- 做T列 -->
+                                        <template v-else-if="col.prop === 't0_action'">
+                                            <div style="text-align: center;">
+                                                <el-button
+                                                    link
+                                                    :type="isPendingT0(row) ? 'success' : 'info'"
+                                                    :disabled="row.is_locked"
+                                                    @click.stop="toggleT0(row)"
+                                                    :title="row.is_locked ? '已锁定, 无法做T' : (isPendingT0(row) ? '点击暂停做T' : '点击启用做T')"
+                                                    style="font-size: 16px;">
+                                                    <el-icon><component :is="isPendingT0(row) ? 'RefreshRight' : 'RefreshLeft'" /></el-icon>
+                                                </el-button>
+                                            </div>
+                                        </template>
+
+                                        <!-- 删除列 -->
+                                        <template v-else-if="col.prop === 'delete_action'">
+                                            <div style="text-align: center;">
+                                                <el-button
+                                                    link
+                                                    type="danger"
+                                                    :disabled="currentAccountId === 'all'"
+                                                    @click.stop="deletePosition(row)"
+                                                    :title="currentAccountId === 'all' ? '汇总视图不支持删除' : '删除该持仓记录'"
+                                                    style="font-size: 16px;">
+                                                    <el-icon><Close /></el-icon>
+                                                </el-button>
+                                            </div>
+                                        </template>
+
+                                        <!-- 名称列 -->
+                                        <template v-else-if="col.prop === 'instrument_name'">
+                                            <span @click="goToStockDetail(row.stock_code)" style="font-weight: bold; color: #fff; cursor: pointer; text-decoration: underline dotted rgba(255,255,255,0.3);">{{ row.instrument_name }}</span>
+                                        </template>
+                                        
+                                        <!-- 代码列 -->
+                                        <template v-else-if="col.prop === 'stock_code'">
+                                            <span @click="goToStockDetail(row.stock_code)" style="font-family: 'Share Tech Mono', monospace; color: var(--text-secondary); cursor: pointer; text-decoration: underline dotted rgba(255,255,255,0.2);">{{ row.stock_code }}</span>
+                                        </template>
+
+                                        <!-- 迷你走势图列 -->
+                                        <template v-else-if="col.prop === 'mini_chart'">
+                                            <el-popover
+                                                placement="left"
+                                                :width="320"
+                                                trigger="hover"
+                                                @show="renderPopoverChart('popover-chart-' + (row.account_id || 'ALL') + '-' + row.stock_code.replace(/\./g, '-'), row.stock_code)"
+                                                @hide="destroyPopoverChart('popover-chart-' + (row.account_id || 'ALL') + '-' + row.stock_code.replace(/\./g, '-'))"
+                                            >
+                                                <template #reference>
+                                                    <div style="width: 100%; height: 30px; display: flex; align-items: center; cursor: pointer; gap: 4px;">
+                                                        <div style="flex: 1; height: 30px; min-width: 0; overflow: hidden;">
+                                                            <canvas :id="'chart-' + (row.account_id || 'ALL') + '-' + row.stock_code.replace(/\./g, '-')" style="width: 100%; height: 100%;"></canvas>
+                                                        </div>
+                                                        <div v-if="row.current_change !== undefined && row.current_change !== null"
+                                                             :style="{color: row.current_change >= 0 ? '#f56c6c' : '#67c23a', fontSize: '10px', width: '36px', textAlign: 'right', fontFamily: 'monospace', flexShrink: 0, lineHeight: '1'}"
+                                                        >{{ row.current_change >= 0 ? '+' : '' }}{{ (row.current_change * 1).toFixed(2) }}%</div>
+                                                    </div>
+                                                </template>
+                                                <div style="width: 300px; background: rgba(15,23,42,0.97); border-radius: 8px; padding: 12px; color: #fff;">
+                                                    <div style="text-align: center; margin-bottom: 8px; font-size: 13px; font-weight: bold; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 6px;">
+                                                        {{ row.instrument_name }}
+                                                        <span style="font-size: 11px; color: rgba(255,255,255,0.45); margin-left: 6px;">{{ row.stock_code }}</span>
+                                                    </div>
+                                                    <!-- 数据统计栏 -->
+                                                    <div style="display: flex; gap: 0; margin-bottom: 10px; background: rgba(255,255,255,0.05); border-radius: 6px; overflow: hidden;">
+                                                        <div style="flex: 1; text-align: center; padding: 5px 0; border-right: 1px solid rgba(255,255,255,0.08);">
+                                                            <div style="font-size: 10px; color: rgba(255,255,255,0.45); margin-bottom: 2px;">现价</div>
+                                                            <div :style="{fontSize: '13px', fontWeight: 'bold', color: (row.current_change || 0) >= 0 ? '#f56c6c' : '#67c23a'}">{{ row.last_price }}</div>
+                                                        </div>
+                                                        <div style="flex: 1; text-align: center; padding: 5px 0; border-right: 1px solid rgba(255,255,255,0.08);">
+                                                            <div style="font-size: 10px; color: rgba(255,255,255,0.45); margin-bottom: 2px;">今日涨幅</div>
+                                                            <div v-if="row.current_change !== undefined && row.current_change !== null"
+                                                                 :style="{fontSize: '13px', fontWeight: 'bold', color: row.current_change >= 0 ? '#f56c6c' : '#67c23a'}">
+                                                                {{ row.current_change >= 0 ? '+' : '' }}{{ (row.current_change * 1).toFixed(2) }}%
+                                                            </div>
+                                                            <div v-else style="font-size: 12px; color: rgba(255,255,255,0.3);">--</div>
+                                                        </div>
+                                                        <div style="flex: 1; text-align: center; padding: 5px 0; border-right: 1px solid rgba(255,255,255,0.08);">
+                                                            <div style="font-size: 10px; color: rgba(255,255,255,0.45); margin-bottom: 2px;">5分钟幅</div>
+                                                            <div v-if="row.change_5min !== undefined && row.change_5min !== null"
+                                                                 :style="{fontSize: '13px', fontWeight: 'bold', color: row.change_5min >= 0 ? '#f56c6c' : '#67c23a'}">
+                                                                {{ row.change_5min >= 0 ? '+' : '' }}{{ row.change_5min.toFixed(2) }}%
+                                                            </div>
+                                                            <div v-else style="font-size: 12px; color: rgba(255,255,255,0.3);">--</div>
+                                                        </div>
+                                                        <div style="flex: 1; text-align: center; padding: 5px 0;">
+                                                            <div style="font-size: 10px; color: rgba(255,255,255,0.45); margin-bottom: 2px;">持仓盈亏</div>
+                                                            <div :style="{fontSize: '13px', fontWeight: 'bold', color: (row.profit_rate || 0) >= 0 ? '#f56c6c' : '#67c23a'}">
+                                                                {{ ((row.profit_rate || 0) * 100) >= 0 ? '+' : '' }}{{ ((row.profit_rate || 0) * 100).toFixed(2) }}%
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                    <!-- 走势图 -->
+                                                    <div style="width: 100%; height: 160px;">
+                                                        <canvas :id="'popover-chart-' + (row.account_id || 'ALL') + '-' + row.stock_code.replace(/\./g, '-')" style="width: 100%; height: 100%;"></canvas>
+                                                    </div>
+                                                </div>
+                                            </el-popover>
+                                        </template>
+                                        
+                                        <!-- 可用列 -->
+                                        <template v-else-if="col.prop === 'can_use_volume'">
+                                            <span style="font-family: 'Share Tech Mono', monospace; color: var(--primary-color);">{{ row.can_use_volume }}</span>
+                                        </template>
+                                        
+                                        <!-- 持仓列 -->
+                                        <template v-else-if="col.prop === 'volume'">
+                                            <span style="font-family: 'Share Tech Mono', monospace;">{{ row.volume }}</span>
+                                        </template>
+                                        
+                                        <!-- 盈亏列 -->
+                                        <template v-else-if="col.prop === 'float_profit'">
+                                            <span :class="(row.volume > 0 ? row.float_profit : (row.position_profit || row.float_profit || 0)) >= 0 ? 'profit' : 'loss'">
+                                                {{ formatMoney(row.volume > 0 ? row.float_profit : (row.position_profit || row.float_profit || 0)) }}
+                                            </span>
+                                        </template>
+                                        
+                                        <!-- 盈亏率列 -->
+                                        <template v-else-if="col.prop === 'profit_rate'">
+                                            <span :class="((row.profit_rate || 0) * 100) >= 0 ? 'profit' : 'loss'">
+                                                {{ ((row.profit_rate || 0) * 100).toFixed(2) }}%
+                                            </span>
+                                        </template>
+                                        
+                                        <!-- 当日幅列 -->
+                                        <template v-else-if="col.prop === 'current_change'">
+                                            <span v-if="row.current_change !== undefined && row.current_change !== null" :class="row.current_change >= 0 ? 'profit' : 'loss'">
+                                                {{ row.current_change >= 0 ? '+' : '' }}{{ (row.current_change * 1).toFixed(2) }}%
+                                            </span>
+                                            <span v-else style="color: var(--text-secondary);">--</span>
+                                        </template>
+
+                                        <!-- 5分钟涨跌幅列 -->
+                                        <template v-else-if="col.prop === 'change_5min'">
+                                            <span v-if="row.change_5min !== undefined && row.change_5min !== null" :class="row.change_5min >= 0 ? 'profit' : 'loss'">
+                                                {{ row.change_5min >= 0 ? '+' : '' }}{{ row.change_5min.toFixed(2) }}%
+                                            </span>
+                                            <span v-else style="color: var(--text-secondary);">--</span>
+                                        </template>
+
+                                        <!-- T0操作相关列 -->
+                                        <template v-else-if="col.prop === 'today_buy_amount'">
+                                            <span v-if="row.today_buy_amount > 0" class="profit">{{ formatMoney(row.today_buy_amount) }}</span>
+                                            <span v-else style="color: var(--text-secondary);">0.00</span>
+                                        </template>
+                                        <template v-else-if="col.prop === 'today_sell_amount'">
+                                            <span v-if="row.today_sell_amount > 0" class="loss">{{ formatMoney(row.today_sell_amount) }}</span>
+                                            <span v-else style="color: var(--text-secondary);">0.00</span>
+                                        </template>
+                                        <template v-else-if="col.prop === 'today_net_amount'">
+                                            <span v-if="row.today_net_amount !== 0" :class="row.today_net_amount > 0 ? 'profit' : 'loss'">
+                                                {{ row.today_net_amount > 0 ? '+' : '' }}{{ formatMoney(row.today_net_amount < 0 ? -row.today_net_amount : row.today_net_amount) }}
+                                            </span>
+                                            <span v-else style="color: var(--text-secondary);">0.00</span>
+                                        </template>
+                                        <template v-else-if="col.prop === 'today_t_profit'">
+                                            <span v-if="row.today_t_profit !== 0" :class="row.today_t_profit > 0 ? 'profit' : 'loss'">
+                                                {{ row.today_t_profit > 0 ? '+' : '' }}{{ formatMoney(row.today_t_profit) }}
+                                            </span>
+                                            <span v-else style="color: var(--text-secondary);">0.00</span>
+                                        </template>
+
+                                        <!-- 题材列 -->
+                                        <template v-else-if="col.prop === 'topic_reason'">
+                                            <span style="font-size: 12px; color: var(--text-secondary);">{{ row.topic_reason || '--' }}</span>
+                                        </template>
+
+                                        <!-- 其他金额列 -->
+                                        <template v-else-if="['avg_price', 'last_price', 'market_value'].includes(col.prop)">
+                                            {{ formatMoney(row[col.prop]) }}
+                                        </template>
+                                        
+                                        <!-- 默认展示 -->
+                                        <template v-else>
+                                            {{ row[col.prop] }}
+                                        </template>
+                                    </template>
+                                </el-table-column>
+                            </el-table>
+                        </div>
+                    </div>
+
+                    <!-- 历史资金曲线 -->
+                    <div class="card">
+                        <div style="padding: 20px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center;">
+                            <h3 style="font-size: 16px; font-weight: 800; letter-spacing: 1px;">资产曲线 / 累计收益率</h3>
+                            <div style="display: flex; gap: 10px; align-items: center;">
+                                 <el-radio-group v-model="chartType" size="small" @change="handleChartTypeChange">
+                                     <el-radio-button label="asset">资产</el-radio-button>
+                                     <el-radio-button label="rate">收益率</el-radio-button>
+                                 </el-radio-group>
+                                 <el-select v-model="chartPeriod" size="small" style="width: 100px;" @change="loadChartData">
+                                    <el-option label="2小时" :value="2"></el-option>
+                                    <el-option label="6小时" :value="6"></el-option>
+                                    <el-option label="24小时" :value="24"></el-option>
+                                    <el-option label="7天" :value="168"></el-option>
+                                </el-select>
+                            </div>
+                        </div>
+                        <div style="padding: 10px 20px; border-bottom: 1px solid var(--border-color); display: flex; flex-wrap: wrap; gap: 28px; align-items: center; font-size: 13px;">
+                            <span style="color: var(--text-secondary);">本月收益率
+                                <b :class="monthProfitRate >= 0 ? 'profit' : 'loss'" style="margin-left: 6px; font-size: 15px;">{{ monthProfitRate >= 0 ? '+' : '' }}{{ monthProfitRate.toFixed(2) }}%</b>
+                            </span>
+                            <span style="color: var(--text-secondary);">本月资产变动
+                                <b :class="monthProfit >= 0 ? 'profit' : 'loss'" style="margin-left: 6px; font-size: 15px;">{{ monthProfit >= 0 ? '+' : '' }}{{ formatMoney(monthProfit) }}</b>
+                            </span>
+                        </div>
+                          <div class="chart-container" v-loading="isChartLoading" element-loading-background="rgba(11, 14, 20, 0.7)">
+                              <canvas id="assetChart"></canvas>
+                          </div>
+                    </div>
+
+                    <!-- 历史买入列表（stock_market_data 当日报出） -->
+                    <div class="card" style="margin-top: 20px;">
+                        <div style="padding: 20px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center;">
+                            <h3 style="font-size: 16px; font-weight: 800; letter-spacing: 1px;">历史买入列表
+                                <span style="font-size: 12px; font-weight: 400; color: var(--text-secondary); margin-left: 10px;">
+                                    {{ marketDataTradeDate || '今日' }} 报出 {{ marketDataRecords.length }} 只 · 列表每5秒刷新 · 实时涨幅每1分钟统一更新
+                                </span>
+                            </h3>
+                            <el-button size="small" @click="loadMarketDataToday(false)" :loading="marketDataLoading">刷新</el-button>
+                        </div>
+                        <div style="padding: 0 10px;">
+                            <el-table :data="marketDataRecords" size="small" style="width: 100%;" max-height="56vh"
+                                      empty-text="今日暂无报出数据" v-loading="marketDataLoading">
+                                <el-table-column prop="stock_name" label="名称" width="92" fixed>
+                                    <template #default="{ row }">
+                                        <span @click="goToStockDetail(row.ts_code || row.stock_code)" style="font-weight: bold; color: #fff; cursor: pointer;">{{ row.stock_name || '--' }}</span>
+                                        <div style="font-size: 11px; color: var(--text-secondary); font-family: monospace;">{{ row.stock_code }}</div>
+                                    </template>
+                                </el-table-column>
+                                <el-table-column prop="dynamic_change" label="实时涨幅" width="86" align="right" sortable>
+                                    <template #default="{ row }">
+                                        <span v-if="row.dynamic_change != null" :class="Number(row.dynamic_change) >= 0 ? 'profit' : 'loss'" style="font-weight: 800;">{{ formatPercent(row.dynamic_change) }}</span>
+                                        <span v-else style="color: var(--text-secondary);">--</span>
+                                    </template>
+                                </el-table-column>
+                                <el-table-column prop="current_change" label="报出涨幅" width="82" align="right" sortable>
+                                    <template #default="{ row }">
+                                        <span :class="Number(row.current_change) >= 0 ? 'profit' : 'loss'">{{ formatPercent(row.current_change) }}</span>
+                                    </template>
+                                </el-table-column>
+                                <el-table-column prop="latest_price" label="最新价" width="78" align="right" sortable>
+                                    <template #default="{ row }">{{ row.latest_price != null ? Number(row.latest_price).toFixed(2) : '--' }}</template>
+                                </el-table-column>
+                                <el-table-column prop="topic" label="题材" min-width="130" show-overflow-tooltip>
+                                    <template #default="{ row }">
+                                        <span style="color: var(--primary-color);">{{ row.topic || '--' }}</span>
+                                    </template>
+                                </el-table-column>
+                                <el-table-column prop="market_value_yi" label="市值" width="84" align="right" sortable>
+                                    <template #default="{ row }">{{ formatYi(row.market_value_yi) }}</template>
+                                </el-table-column>
+                                <el-table-column prop="dde" label="DDE" width="78" align="right" sortable>
+                                    <template #default="{ row }">
+                                        <span :class="Number(row.dde) >= 0 ? 'profit' : 'loss'">{{ row.dde != null ? Number(row.dde).toFixed(3) : '--' }}</span>
+                                    </template>
+                                </el-table-column>
+                                <el-table-column prop="report_count_7d" label="7日报出" width="76" align="center" sortable>
+                                    <template #default="{ row }">
+                                        <span :style="{ color: Number(row.report_count_7d) > 1 ? 'var(--primary-color)' : 'var(--text-secondary)', fontWeight: Number(row.report_count_7d) > 1 ? 800 : 400 }">{{ row.report_count_7d }} 次</span>
+                                    </template>
+                                </el-table-column>
+                                <el-table-column prop="update_time" label="报出时间" width="150" sortable show-overflow-tooltip></el-table-column>
+                                <el-table-column label="操作" width="100" align="center" fixed="right">
+                                    <template #default="{ row }">
+                                        <el-button type="danger" size="small" link @click="openMarketBuyDialog(row)" style="font-size: 17px; font-weight: bold;" title="买入下发">
+                                            <el-icon><Plus /></el-icon>
+                                        </el-button>
+                                        <el-button type="success" size="small" link @click="analyzeMarketDataKline(row)">K线</el-button>
+                                    </template>
+                                </el-table-column>
+                            </el-table>
+                        </div>
+                    </div>
+                </el-col>
+
+                <!-- 右侧：交易和统计 -->
+                <el-col :xs="24" :md="8">
+                    <!-- 交易日历 -->
+                    <div class="card" style="padding: 20px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                            <h3 style="font-size: 14px; font-weight: 800; margin: 0; letter-spacing: 1px;">交易日历</h3>
+                            <div class="calendar-nav" style="display: flex; align-items: center; gap: 6px;">
+                                <el-radio-group v-model="calendarViewType" size="small" style="margin-right: 4px;">
+                                    <el-radio-button label="amount">金额</el-radio-button>
+                                    <el-radio-button label="rate">收益</el-radio-button>
+                                </el-radio-group>
+                                <span style="font-size: 12px; color: var(--text-secondary); font-family: 'Share Tech Mono', monospace; min-width: 60px; text-align: center;">{{ calendarMonth }}</span>
+                                <div style="display: flex; gap: 5px;">
+                                    <el-button size="small" circle @click="prevMonth" style="background: rgba(255,255,255,0.05); border: none; color: #fff;">
+                                        <el-icon><arrow-left /></el-icon>
+                                    </el-button>
+                                    <el-button size="small" circle @click="nextMonth" style="background: rgba(255,255,255,0.05); border: none; color: #fff;">
+                                        <el-icon><arrow-right /></el-icon>
+                                    </el-button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="calendar-grid">
+                            <!-- 星期表头 -->
+                            <div v-for="w in ['一', '二', '三', '四', '五', '六', '日']" :key="w" class="calendar-header-day">{{ w }}</div>
+                            
+                            <div v-for="day in calendarDays" :key="day.key" 
+                                 :class="['calendar-day', { 'today': day.isToday, 'has-trade': day.hasTrade, 'other-month': !day.isCurrentMonth, 'active': day.dateStr === selectedDate }]"
+                                 @click="selectDate(day.dateStr)">
+                                <div class="day-num">{{ day.day }}</div>
+                                <div class="day-stats" v-if="day.isCurrentMonth">
+                                    <div class="day-ratio" v-if="calendarViewType === 'amount' && day.positionRatio > 0">仓{{ day.positionRatio.toFixed(1) }}%</div>
+                                    <template v-if="calendarViewType === 'amount'">
+                                        <div class="day-profit" v-if="Math.abs(day.profit) > 0.01" :class="day.profit > 0 ? 'profit' : 'loss'">
+                                            {{ day.profit > 0 ? '+' : '' }}{{ Math.abs(day.profit) >= 10000 ? (day.profit / 10000).toFixed(1) + 'W' : day.profit.toFixed(0) }}
+                                        </div>
+                                    </template>
+                                    <template v-else>
+                                        <div class="day-profit" v-if="Math.abs(day.profitRate) > 0.001" :class="day.profitRate > 0 ? 'profit' : 'loss'">
+                                            {{ day.profitRate > 0 ? '+' : '' }}{{ day.profitRate.toFixed(2) }}%
+                                        </div>
+                                    </template>
+                                </div>
+                                <div v-if="day.hasTrade" class="trade-dot"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 交易记录 -->
+                    <div class="card">
+                        <div style="padding: 10px 15px 0 15px; display: flex; justify-content: space-between; align-items: center;">
+                            <el-tabs v-model="activeTradeTab" class="custom-tabs" style="flex: 1;">
+                                <el-tab-pane :label="isTodaySelected ? '今日成交' : selectedDate + ' 成交'" name="today"></el-tab-pane>
+                                <el-tab-pane label="买入记录" name="buy"></el-tab-pane>
+                                <el-tab-pane label="卖出记录" name="sell"></el-tab-pane>
+                            </el-tabs>
+                            <el-select v-model="strategyFilter" size="small" placeholder="所有策略" clearable style="width: 120px; margin-bottom: 10px;">
+                                <el-option v-for="s in availableStrategies" :key="s" :label="s" :value="s"></el-option>
+                            </el-select>
+                        </div>
+                        
+                        <div style="padding: 0 15px 15px 15px;">
+                            <template v-if="activeTradeTab === 'today'">
+                                <el-table :data="filteredRecentTrades" size="small" style="width: 100%">
+                                    <el-table-column label="时间" min-width="25%" header-align="left">
+                                        <template #default="{ row }">
+                                            <span style="font-family: 'Share Tech Mono', monospace; color: var(--text-secondary);">{{ row.time }}</span>
+                                        </template>
+                                    </el-table-column>
+                                    <el-table-column label="名称" min-width="30%" header-align="left">
+                                        <template #default="{ row }">
+                                            <span @click="goToStockDetail(row.stock_code)" style="font-weight: bold; color: #fff; cursor: pointer; text-decoration: underline dotted rgba(255,255,255,0.3);">{{ row.instrument_name }}</span>
+                                        </template>
+                                    </el-table-column>
+                                    <el-table-column label="方向" min-width="20%" header-align="left">
+                                        <template #default="{ row }">
+                                            <span :class="row.direction === '买入' ? 'profit' : (row.direction === '卖出' ? 'loss' : '')" style="font-size: 10px; font-weight: 800;">
+                                                {{ row.direction }}
+                                            </span>
+                                        </template>
+                                    </el-table-column>
+                                    <!-- 全部账号视图下展示账号 -->
+                                    <el-table-column v-if="currentAccountId === 'ALL'" label="账号" min-width="20%" header-align="left">
+                                        <template #default="{ row }">
+                                            <span style="font-size: 10px; color: var(--text-secondary);">{{ row.account_id || '--' }}</span>
+                                        </template>
+                                    </el-table-column>
+                                    <!-- <el-table-column label="价格" align="right" min-width="14%" header-align="right">
+                                        <template #default="{ row }">
+                                            <span style="font-family: 'Share Tech Mono', monospace;">{{ row.traded_price }}</span>
+                                        </template>
+                                    </el-table-column> -->
+                                    <el-table-column label="金额" align="right" min-width="25%" header-align="right">
+                                        <template #default="{ row }">
+                                            <span style="font-family: 'Share Tech Mono', monospace; font-weight: bold; color: var(--primary-color);">{{ formatMoney(row.amount) }}</span>
+                                        </template>
+                                    </el-table-column>
+                                </el-table>
+                            </template>
+                            
+                            <template v-if="activeTradeTab === 'buy'">
+                                <el-table :data="filteredBuyTrades" size="small" style="width: 100%">
+                                    <el-table-column label="时间" min-width="30%" header-align="left">
+                                        <template #default="{ row }">
+                                            <span style="font-family: 'Share Tech Mono', monospace; color: var(--text-secondary);">{{ row.time }}</span>
+                                        </template>
+                                    </el-table-column>
+                                    <el-table-column label="名称" min-width="40%" header-align="left">
+                                        <template #default="{ row }">
+                                            <span @click="goToStockDetail(row.stock_code)" style="font-weight: bold; color: #fff; cursor: pointer; text-decoration: underline dotted rgba(255,255,255,0.3);">{{ row.instrument_name }}</span>
+                                        </template>
+                                    </el-table-column>
+                                    <el-table-column label="价格" align="right" min-width="18%" header-align="right">
+                                        <template #default="{ row }">
+                                            <span style="font-family: 'Share Tech Mono', monospace;">{{ row.traded_price }}</span>
+                                        </template>
+                                    </el-table-column>
+                                    <el-table-column label="金额" align="right" min-width="30%" header-align="right">
+                                        <template #default="{ row }">
+                                            <span style="font-family: 'Share Tech Mono', monospace; font-weight: bold; color: var(--profit-color);">{{ formatMoney(row.amount) }}</span>
+                                        </template>
+                                    </el-table-column>
+                                </el-table>
+                            </template>
+
+                            <template v-if="activeTradeTab === 'sell'">
+                                <el-table :data="filteredSellTrades" size="small" style="width: 100%">
+                                    <el-table-column label="时间" min-width="30%" header-align="left">
+                                        <template #default="{ row }">
+                                            <span style="font-family: 'Share Tech Mono', monospace; color: var(--text-secondary);">{{ row.time }}</span>
+                                        </template>
+                                    </el-table-column>
+                                    <el-table-column label="名称" min-width="40%" header-align="left">
+                                        <template #default="{ row }">
+                                            <span @click="goToStockDetail(row.stock_code)" style="font-weight: bold; color: #fff; cursor: pointer; text-decoration: underline dotted rgba(255,255,255,0.3);">{{ row.instrument_name }}</span>
+                                        </template>
+                                    </el-table-column>
+                                    <el-table-column label="价格" align="right" min-width="18%" header-align="right">
+                                        <template #default="{ row }">
+                                            <span style="font-family: 'Share Tech Mono', monospace;">{{ row.traded_price }}</span>
+                                        </template>
+                                    </el-table-column>
+                                    <el-table-column label="金额" align="right" min-width="30%" header-align="right">
+                                        <template #default="{ row }">
+                                            <span style="font-family: 'Share Tech Mono', monospace; font-weight: bold; color: var(--loss-color);">{{ formatMoney(row.amount) }}</span>
+                                        </template>
+                                    </el-table-column>
+                                </el-table>
+                            </template>
+                        </div>
+                    </div>
+
+                    <!-- 持仓分布图 -->
+                    <div class="card" style="padding: 20px;">
+                        <h3 style="font-size: 14px; font-weight: 800; margin-bottom: 15px; letter-spacing: 1px;">持仓分布</h3>
+                        <div style="height: 250px; position: relative;">
+                            <canvas id="positionPieChart"></canvas>
+                        </div>
+                    </div>
+
+                    <!-- 资金流向 -->
+                    <div class="card" style="padding: 20px;">
+                        <h3 style="font-size: 14px; font-weight: 800; margin-bottom: 15px; letter-spacing: 1px;">{{ selectedDate }} 资金流向</h3>
+                        <div style="display: flex; flex-direction: column; gap: 15px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <span style="font-size: 12px; color: var(--text-secondary);">买入金额 ({{ todayBuyCount }}笔)</span>
+                                <span class="profit" style="font-weight: 800;">+{{ formatMoney(todayBuyAmount) }}</span>
+                            </div>
+                            <div style="background: rgba(255, 255, 255, 0.05); height: 4px; border-radius: 2px;">
+                                <div :style="{ width: (todayBuyAmount / (todayBuyAmount + todaySellAmount || 1) * 100) + '%', background: 'var(--profit-color)', height: '100%', borderRadius: '2px', boxShadow: '0 0 10px var(--profit-color)' }"></div>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <span style="font-size: 12px; color: var(--text-secondary);">卖出金额 ({{ todaySellCount }}笔)</span>
+                                <span class="loss" style="font-weight: 800;">-{{ formatMoney(todaySellAmount) }}</span>
+                            </div>
+                            <div style="background: rgba(255, 255, 255, 0.05); height: 4px; border-radius: 2px;">
+                                <div :style="{ width: (todaySellAmount / (todayBuyAmount + todaySellAmount || 1) * 100) + '%', background: 'var(--loss-color)', height: '100%', borderRadius: '2px', boxShadow: '0 0 10px var(--loss-color)' }"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 记录板 -->
+                    <div class="card" style="padding: 20px;">
+                        <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 15px;">
+                            <h3 style="font-size: 14px; font-weight: 800; letter-spacing: 1px;">记录板</h3>
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <el-button size="small" @click="openResearchBoardLargeDialog">放大</el-button>
+                                <el-button size="small" @click="loadResearchBoard(true, true)" :loading="researchBoardLoading">刷新</el-button>
+                                <el-button size="small" @click="repairResearchBoard" :loading="researchBoardRepairing">一键修复</el-button>
+                                <el-button size="small" @click="openResearchBoardInputsDialog">归档</el-button>
+                                <el-button size="small" type="primary" @click="parseResearchBoard" :loading="researchBoardParsing" style="background: var(--primary-color); color: #000; border: none; font-weight: 800;">提交</el-button>
+                            </div>
+                        </div>
+                        <el-input
+                            v-model="researchBoardInput"
+                            type="textarea"
+                            :rows="5"
+                            resize="none"
+                            placeholder="粘贴股票逻辑，例如：凯伦股份要转型OCS光通信，会有一波行情；鸿仕达市值看到200亿；"
+                            style="margin-bottom: 10px;"></el-input>
+                        <div style="display: flex; justify-content: flex-end; margin-bottom: 12px;">
+                            <el-button type="primary" @click="parseResearchBoard" :loading="researchBoardParsing" style="background: var(--primary-color); color: #000; border: none; font-weight: 800;">解析并保存</el-button>
+                        </div>
+                        <div v-if="researchBoardTaskMessage" style="margin-bottom: 12px; padding: 8px 10px; border: 1px solid rgba(0,242,255,0.2); background: rgba(0,242,255,0.05); color: var(--primary-color); font-size: 12px;">
+                            {{ researchBoardTaskMessage }}
+                        </div>
+                        <el-table :data="researchBoardPagedRecords" size="small" style="width: 100%;" max-height="70vh" empty-text="暂无记录，输入内容后点击提交" v-loading="researchBoardLoading" :default-sort="{ prop: 'created_at', order: 'descending' }" @sort-change="onResearchBoardSortChange">
+                            <el-table-column prop="stock_name" label="名称" width="88" sortable="custom">
+                                <template #default="{ row }">
+                                    <span @click="goToStockDetail(row.stock_code)" style="font-weight: bold; color: #fff; cursor: pointer;">{{ row.stock_name || '--' }}</span>
+                                </template>
+                            </el-table-column>
+                            <el-table-column prop="current_change" label="涨跌幅" width="92" align="right" sortable="custom">
+                                <template #default="{ row }">
+                                    <span :class="Number(row.current_change) >= 0 ? 'profit' : 'loss'">{{ formatPercent(row.current_change) }}</span>
+                                </template>
+                            </el-table-column>
+                            <el-table-column prop="logic" label="逻辑" min-width="180" show-overflow-tooltip sortable="custom"></el-table-column>
+                            <el-table-column prop="topic" label="题材" min-width="120" show-overflow-tooltip sortable="custom">
+                                <template #default="{ row }">
+                                    <span style="color: var(--primary-color);">{{ row.topic || row.limit_up_reason || row.concept || '--' }}</span>
+                                </template>
+                            </el-table-column>
+                            <el-table-column prop="target_market_value_yi" label="目标市值" width="92" align="right" sortable="custom">
+                                <template #default="{ row }">{{ formatYi(row.target_market_value_yi) }}</template>
+                            </el-table-column>
+                            <el-table-column prop="current_market_value_yi" label="现在市值" width="92" align="right" sortable="custom">
+                                <template #default="{ row }">{{ formatYi(row.current_market_value_yi) }}</template>
+                            </el-table-column>
+                            <el-table-column prop="update_time" label="修改日期" width="150" sortable="custom" show-overflow-tooltip></el-table-column>
+                            <el-table-column label="操作" width="140" align="center">
+                                <template #default="{ row }">
+                                    <el-button type="success" size="small" link @click="analyzeResearchBoardKline(row)">K线</el-button>
+                                    <el-button type="primary" size="small" link @click="openResearchBoardEditDialog(row)">编辑</el-button>
+                                    <el-button type="danger" size="small" link @click="deleteResearchBoardRecord(row)">删除</el-button>
+                                </template>
+                            </el-table-column>
+                        </el-table>
+                        <el-pagination
+                            v-model:current-page="researchBoardPage"
+                            v-model:page-size="researchBoardPageSize"
+                            :page-sizes="[50, 100, 200]"
+                            :total="researchBoardRecords.length"
+                            layout="total, sizes, prev, pager, next"
+                            small
+                            background
+                            style="margin-top: 10px; display: flex; justify-content: flex-end;">
+                        </el-pagination>
+                    </div>
+                </el-col>
+            </el-row>
+            </template>
+        </div>
+
+        <!-- 记录板放大操作页 -->
+        <el-dialog v-model="showResearchBoardLargeDialog" title="记录板" width="92vw" top="4vh" custom-class="tech-dialog">
+            <div style="height: 82vh; display: flex; flex-direction: column; gap: 12px;">
+                <div style="display: flex; gap: 10px; align-items: flex-start;">
+                    <el-input
+                        v-model="researchBoardInput"
+                        type="textarea"
+                        :rows="6"
+                        resize="none"
+                        placeholder="粘贴股票逻辑，例如：凯伦股份要转型OCS光通信，会有一波行情；鸿仕达市值看到200亿；"
+                        style="flex: 1;"></el-input>
+                    <div style="display: flex; flex-direction: column; gap: 8px; width: 90px;">
+                        <el-button @click="loadResearchBoard(true, true)" :loading="researchBoardLoading">刷新</el-button>
+                        <el-button @click="repairResearchBoard" :loading="researchBoardRepairing">一键修复</el-button>
+                        <el-button @click="openResearchBoardInputsDialog">归档</el-button>
+                        <el-button type="primary" @click="parseResearchBoard" :loading="researchBoardParsing" style="background: var(--primary-color); color: #000; border: none; font-weight: 800;">提交</el-button>
+                    </div>
+                </div>
+                <div v-if="researchBoardTaskMessage" style="padding: 8px 10px; border: 1px solid rgba(0,242,255,0.2); background: rgba(0,242,255,0.05); color: var(--primary-color); font-size: 12px;">
+                    {{ researchBoardTaskMessage }}
+                </div>
+                <el-table :data="researchBoardSortedRecords" size="small" style="width: 100%; flex: 1;" height="100%" empty-text="暂无记录，输入内容后点击提交" v-loading="researchBoardLoading" :default-sort="{ prop: 'created_at', order: 'descending' }" @sort-change="onResearchBoardSortChange">
+                    <el-table-column prop="stock_name" label="名称" width="110" sortable="custom" fixed>
+                        <template #default="{ row }">
+                            <span @click="goToStockDetail(row.stock_code)" style="font-weight: bold; color: #fff; cursor: pointer;">{{ row.stock_name || '--' }}</span>
+                        </template>
+                    </el-table-column>
+                    <el-table-column prop="current_change" label="涨跌幅" width="110" align="right" sortable="custom">
+                        <template #default="{ row }">
+                            <span :class="Number(row.current_change) >= 0 ? 'profit' : 'loss'">{{ formatPercent(row.current_change) }}</span>
+                        </template>
+                    </el-table-column>
+                    <el-table-column prop="topic" label="题材" min-width="180" show-overflow-tooltip sortable="custom">
+                        <template #default="{ row }">
+                            <span style="color: var(--primary-color);">{{ row.topic || row.limit_up_reason || row.concept || '--' }}</span>
+                        </template>
+                    </el-table-column>
+                    <el-table-column prop="logic" label="逻辑" min-width="360" show-overflow-tooltip sortable="custom"></el-table-column>
+                    <el-table-column prop="target_market_value_yi" label="目标市值" width="110" align="right" sortable="custom">
+                        <template #default="{ row }">{{ formatYi(row.target_market_value_yi) }}</template>
+                    </el-table-column>
+                    <el-table-column prop="current_market_value_yi" label="现在市值" width="110" align="right" sortable="custom">
+                        <template #default="{ row }">{{ formatYi(row.current_market_value_yi) }}</template>
+                    </el-table-column>
+                    <el-table-column prop="limit_up_trade_date" label="涨停日期" width="110" sortable="custom"></el-table-column>
+                    <el-table-column prop="created_at" label="记录时间" width="150" sortable="custom"></el-table-column>
+                    <el-table-column prop="update_time" label="修改日期" width="150" sortable="custom"></el-table-column>
+                    <el-table-column label="操作" width="160" align="center" fixed="right">
+                        <template #default="{ row }">
+                            <el-button type="success" size="small" link @click="analyzeResearchBoardKline(row)">K线</el-button>
+                            <el-button type="primary" size="small" link @click="openResearchBoardEditDialog(row)">编辑</el-button>
+                            <el-button type="danger" size="small" link @click="deleteResearchBoardRecord(row)">删除</el-button>
+                        </template>
+                    </el-table-column>
+                </el-table>
+            </div>
+        </el-dialog>
+
+        <!-- T扫描大界面 -->
+        <el-dialog v-model="showTScanDialog" title="T扫描" width="92vw" top="4vh" custom-class="tech-dialog">
+            <div style="height: 82vh; display: flex; flex-direction: column; gap: 12px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;">
+                    <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                        <div style="min-width: 120px; padding: 10px 12px; border: 1px solid var(--border-color); background: rgba(0,242,255,0.04);">
+                            <div style="font-size: 11px; color: var(--text-secondary);">扫描账号</div>
+                            <div style="font-size: 18px; font-weight: 800; color: var(--primary-color);">{{ tScanSummary.total_accounts || 0 }}</div>
+                        </div>
+                        <div style="min-width: 120px; padding: 10px 12px; border: 1px solid var(--border-color); background: rgba(0,242,255,0.04);">
+                            <div style="font-size: 11px; color: var(--text-secondary);">今日成交账号</div>
+                            <div style="font-size: 18px; font-weight: 800;">{{ tScanSummary.traded_accounts || 0 }}</div>
+                        </div>
+                        <div style="min-width: 120px; padding: 10px 12px; border: 1px solid var(--border-color); background: rgba(0,242,255,0.04);">
+                            <div style="font-size: 11px; color: var(--text-secondary);">可操作机会</div>
+                            <div style="font-size: 18px; font-weight: 800;" class="profit">{{ tScanSummary.candidate_count || 0 }}</div>
+                        </div>
+                        <div style="min-width: 150px; padding: 10px 12px; border: 1px solid var(--border-color); background: rgba(0,242,255,0.04);">
+                            <div style="font-size: 11px; color: var(--text-secondary);">预期T利润</div>
+                            <div style="font-size: 18px; font-weight: 800;" :class="Number(tScanSummary.candidate_profit || 0) >= 0 ? 'profit' : 'loss'">
+                                {{ formatMoney(tScanSummary.candidate_profit || 0) }}
+                            </div>
+                        </div>
+                        <div style="min-width: 150px; padding: 10px 12px; border: 1px solid var(--border-color); background: rgba(0,242,255,0.04);">
+                            <div style="font-size: 11px; color: var(--text-secondary);">已闭合T利润</div>
+                            <div style="font-size: 18px; font-weight: 800;" :class="Number(tScanSummary.completed_profit || 0) >= 0 ? 'profit' : 'loss'">
+                                {{ formatMoney(tScanSummary.completed_profit || 0) }}
+                            </div>
+                        </div>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span style="font-size: 12px; color: var(--text-secondary);">日期 {{ tScanTradeDate || '--' }} · {{ tScanScanTime || '--' }}</span>
+                        <el-checkbox v-model="tScanOnlyCandidates" border size="small">只看可操作</el-checkbox>
+                        <el-button size="small" @click="loadTScan" :loading="tScanLoading">刷新</el-button>
+                    </div>
+                </div>
+
+                <el-table
+                    :data="tScanVisibleRows"
+                    size="small"
+                    style="width: 100%; flex: 1;"
+                    height="100%"
+                    v-loading="tScanLoading"
+                    empty-text="今日暂无可做T记录">
+                    <el-table-column prop="account_alias" label="账号" width="150" fixed show-overflow-tooltip></el-table-column>
+                    <el-table-column prop="stock_name" label="名称" width="110" fixed show-overflow-tooltip></el-table-column>
+                    <el-table-column prop="stock_code" label="代码" width="100" fixed></el-table-column>
+                    <el-table-column prop="action" label="建议" width="80" align="center">
+                        <template #default="{ row }">
+                            <span :class="row.action === '卖出' ? 'loss' : (row.action === '买入' ? 'profit' : '')" style="font-weight: 800;">{{ row.action }}</span>
+                        </template>
+                    </el-table-column>
+                    <el-table-column prop="status" label="状态" width="100" align="center">
+                        <template #default="{ row }">
+                            <span
+                                :class="row.is_candidate && !row.is_handled ? 'profit' : ''"
+                                :style="row.is_candidate && !row.is_handled ? '' : 'color: var(--text-secondary);'">
+                                {{ row.is_handled ? '已下发' : (row.is_processing ? '下发中' : (row.is_queued ? '排队中' : row.status)) }}
+                            </span>
+                        </template>
+                    </el-table-column>
+                    <el-table-column label="下发" width="96" align="center" fixed="right">
+                        <template #default="{ row }">
+                            <div style="display: flex; justify-content: center; gap: 8px;">
+                                <el-button
+                                    link
+                                    type="danger"
+                                    size="small"
+                                    title="按建议数量下发买入"
+                                    :disabled="displayMode || row.is_handled || row.is_queued || row.is_processing || row.action !== '买入' || !row.is_candidate"
+                                    :loading="row.is_processing && row.action === '买入'"
+                                    @click.stop="submitTScanTrade(row, 'buy')"
+                                    style="font-size: 18px; font-weight: 900; padding: 0;">
+                                    +
+                                </el-button>
+                                <el-button
+                                    link
+                                    type="success"
+                                    size="small"
+                                    title="按建议数量下发卖出"
+                                    :disabled="displayMode || row.is_handled || row.is_queued || row.is_processing || row.action !== '卖出' || !row.is_candidate"
+                                    :loading="row.is_processing && row.action === '卖出'"
+                                    @click.stop="submitTScanTrade(row, 'sell')"
+                                    style="font-size: 18px; font-weight: 900; padding: 0;">
+                                    -
+                                </el-button>
+                            </div>
+                        </template>
+                    </el-table-column>
+                    <el-table-column prop="suggested_volume" label="数量" width="90" align="right" sortable>
+                        <template #default="{ row }">
+                            <span style="font-family: 'Share Tech Mono', monospace;">{{ row.suggested_volume || '--' }}</span>
+                        </template>
+                    </el-table-column>
+                    <el-table-column prop="expected_t_profit" label="预期T利润" width="120" align="right" sortable>
+                        <template #default="{ row }">
+                            <span :class="Number(row.expected_t_profit || 0) >= 0 ? 'profit' : 'loss'">{{ formatMoney(row.expected_t_profit || 0) }}</span>
+                        </template>
+                    </el-table-column>
+                    <el-table-column prop="realized_t_profit" label="已实现T" width="110" align="right" sortable>
+                        <template #default="{ row }">
+                            <span :class="Number(row.realized_t_profit || 0) >= 0 ? 'profit' : 'loss'">{{ formatMoney(row.realized_t_profit || 0) }}</span>
+                        </template>
+                    </el-table-column>
+                    <el-table-column prop="total_t_profit" label="合计T" width="110" align="right" sortable>
+                        <template #default="{ row }">
+                            <span :class="Number(row.total_t_profit || 0) >= 0 ? 'profit' : 'loss'">{{ formatMoney(row.total_t_profit || 0) }}</span>
+                        </template>
+                    </el-table-column>
+                    <el-table-column prop="current_price" label="现价" width="90" align="right">
+                        <template #default="{ row }">{{ formatPrice(row.current_price) }}</template>
+                    </el-table-column>
+                    <el-table-column prop="reference_price" label="参考价" width="90" align="right">
+                        <template #default="{ row }">{{ formatPrice(row.reference_price) }}</template>
+                    </el-table-column>
+                    <el-table-column prop="position_volume" label="持仓" width="90" align="right" sortable></el-table-column>
+                    <el-table-column prop="can_use_volume" label="可用" width="90" align="right" sortable></el-table-column>
+                    <el-table-column prop="buy_volume" label="今日买量" width="100" align="right" sortable></el-table-column>
+                    <el-table-column prop="buy_avg_price" label="买均价" width="90" align="right">
+                        <template #default="{ row }">{{ formatPrice(row.buy_avg_price) }}</template>
+                    </el-table-column>
+                    <el-table-column prop="sell_volume" label="今日卖量" width="100" align="right" sortable></el-table-column>
+                    <el-table-column prop="sell_avg_price" label="卖均价" width="90" align="right">
+                        <template #default="{ row }">{{ formatPrice(row.sell_avg_price) }}</template>
+                    </el-table-column>
+                    <el-table-column prop="matched_volume" label="已配对" width="90" align="right" sortable></el-table-column>
+                    <el-table-column prop="net_volume" label="净量" width="90" align="right" sortable>
+                        <template #default="{ row }">
+                            <span :class="Number(row.net_volume || 0) >= 0 ? 'profit' : 'loss'">{{ row.net_volume }}</span>
+                        </template>
+                    </el-table-column>
+                    <el-table-column prop="price_source" label="价格源" width="90" align="center"></el-table-column>
+                </el-table>
+            </div>
+        </el-dialog>
+
+        <!-- 记录板编辑对话框 -->
+        <el-dialog v-model="showResearchBoardEditDialog" title="编辑记录板" width="640px" custom-class="tech-dialog">
+            <el-form label-position="top">
+                <el-row :gutter="12">
+                    <el-col :span="12">
+                        <el-form-item label="名称">
+                            <el-input v-model="researchBoardEditForm.stock_name"></el-input>
+                        </el-form-item>
+                    </el-col>
+                    <el-col :span="12">
+                        <el-form-item label="代码">
+                            <el-input v-model="researchBoardEditForm.stock_code"></el-input>
+                        </el-form-item>
+                    </el-col>
+                </el-row>
+                <el-form-item label="逻辑">
+                    <el-input v-model="researchBoardEditForm.logic" type="textarea" :rows="4" resize="none"></el-input>
+                </el-form-item>
+                <el-row :gutter="12">
+                    <el-col :span="12">
+                        <el-form-item label="目标市值(亿)">
+                            <el-input-number v-model="researchBoardEditForm.target_market_value_yi" :precision="2" :step="10" style="width: 100%;"></el-input-number>
+                        </el-form-item>
+                    </el-col>
+                    <el-col :span="12">
+                        <el-form-item label="题材">
+                            <el-input v-model="researchBoardEditForm.topic" placeholder="默认使用 概念 / 涨停原因"></el-input>
+                        </el-form-item>
+                    </el-col>
+                </el-row>
+                <el-row :gutter="12">
+                    <el-col :span="8">
+                        <el-form-item label="行业">
+                            <el-input v-model="researchBoardEditForm.industry"></el-input>
+                        </el-form-item>
+                    </el-col>
+                    <el-col :span="8">
+                        <el-form-item label="概念">
+                            <el-input v-model="researchBoardEditForm.concept"></el-input>
+                        </el-form-item>
+                    </el-col>
+                    <el-col :span="8">
+                        <el-form-item label="涨停原因">
+                            <el-input v-model="researchBoardEditForm.limit_up_reason"></el-input>
+                        </el-form-item>
+                    </el-col>
+                </el-row>
+            </el-form>
+            <template #footer>
+                <div style="display: flex; justify-content: flex-end; gap: 10px;">
+                    <el-button @click="showResearchBoardEditDialog = false">取消</el-button>
+                    <el-button type="primary" @click="saveResearchBoardEdit" :loading="researchBoardEditing">保存</el-button>
+                </div>
+            </template>
+        </el-dialog>
+
+        <!-- K 线 AI 分析对话框 -->
+        <el-dialog v-model="showKlineAnalysisDialog" :title="`K线分析 · ${klineAnalysisData.stock_name || ''} ${klineAnalysisData.stock_code || ''}`" width="760px" top="6vh" custom-class="tech-dialog">
+            <div v-loading="klineAnalysisLoading" element-loading-text="正在拉取K线并请求大模型...">
+                <div v-if="klineAnalysisData.stats" style="margin-bottom: 12px; padding: 10px; border: 1px solid rgba(0,242,255,0.2); background: rgba(0,242,255,0.05); font-size: 12px; color: #ddd; line-height: 1.8;">
+                    <div>
+                        区间：{{ klineAnalysisData.stats.start_date }} ~ {{ klineAnalysisData.stats.end_date }}（{{ klineAnalysisData.stats.days }}日）
+                        ｜区间涨跌
+                        <span :class="Number(klineAnalysisData.stats.period_change_pct) >= 0 ? 'profit' : 'loss'">{{ klineAnalysisData.stats.period_change_pct }}%</span>
+                        ｜最高 {{ klineAnalysisData.stats.highest }} / 最低 {{ klineAnalysisData.stats.lowest }}
+                        ｜最大回撤 <span class="loss">{{ klineAnalysisData.stats.max_drawdown_pct }}%</span>
+                    </div>
+                    <div>
+                        最新收盘 <span style="color: var(--primary-color); font-weight: bold;">{{ klineAnalysisData.stats.last_close }}</span>
+                        ｜MA5 {{ klineAnalysisData.stats.ma5 ?? '--' }}
+                        ｜MA10 {{ klineAnalysisData.stats.ma10 ?? '--' }}
+                        ｜MA20 {{ klineAnalysisData.stats.ma20 ?? '--' }}
+                        ｜MA60 {{ klineAnalysisData.stats.ma60 ?? '--' }}
+                    </div>
+                    <div>
+                        阳线 <span class="profit">{{ klineAnalysisData.stats.up_days }}</span> 天 /
+                        阴线 <span class="loss">{{ klineAnalysisData.stats.down_days }}</span> 天
+                        ｜近5日量能变化
+                        <span v-if="klineAnalysisData.stats.vol_change_pct !== null && klineAnalysisData.stats.vol_change_pct !== undefined"
+                              :class="Number(klineAnalysisData.stats.vol_change_pct) >= 0 ? 'profit' : 'loss'">
+                            {{ klineAnalysisData.stats.vol_change_pct }}%
+                        </span>
+                        <span v-else>--</span>
+                    </div>
+                </div>
+                <div v-if="klineAnalysisData.source" style="margin-bottom: 8px; font-size: 11px; color: #888;">
+                    分析来源：
+                    <span v-if="klineAnalysisData.source === 'llm'" style="color: var(--primary-color);">大模型</span>
+                    <span v-else-if="klineAnalysisData.source === 'fallback'" style="color: #f5a623;">规则摘要（未配置大模型或调用失败）</span>
+                    <span v-else>{{ klineAnalysisData.source }}</span>
+                </div>
+                <div style="white-space: pre-wrap; line-height: 1.85; font-size: 13px; color: #eee; min-height: 160px; max-height: 50vh; overflow-y: auto; padding: 10px; border: 1px solid rgba(255,255,255,0.08); background: rgba(0,0,0,0.25);">{{ klineAnalysisData.analysis || (klineAnalysisLoading ? '' : '暂无分析内容') }}</div>
+            </div>
+            <template #footer>
+                <div style="display: flex; justify-content: flex-end; gap: 10px;">
+                    <el-button @click="showKlineAnalysisDialog = false">关闭</el-button>
+                </div>
+            </template>
+        </el-dialog>
+
+        <!-- 记录板 · 输入归档与解析复核 -->
+        <el-dialog v-model="showResearchBoardInputsDialog" title="记录板 · 输入归档与解析复核" width="92vw" top="4vh" custom-class="tech-dialog">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                <span style="font-size: 12px; color: var(--text-secondary);">展开每行可查看：原始输入 / 大模型原始返回 / 解析结果 JSON</span>
+                <el-button size="small" @click="loadResearchBoardInputs" :loading="researchBoardInputsLoading">刷新</el-button>
+            </div>
+            <el-table :data="researchBoardInputs" size="small" style="width: 100%;" max-height="76vh" v-loading="researchBoardInputsLoading" empty-text="暂无归档记录">
+                <el-table-column type="expand">
+                    <template #default="{ row }">
+                        <div style="padding: 10px 18px; font-size: 12px; line-height: 1.7;">
+                            <div style="margin-bottom: 10px;">
+                                <div style="color: var(--primary-color); font-weight: 800; margin-bottom: 4px;">原始输入</div>
+                                <div style="white-space: pre-wrap; padding: 8px 10px; border: 1px solid rgba(255,255,255,0.08); background: rgba(0,0,0,0.25);">{{ row.content || '--' }}</div>
+                            </div>
+                            <div style="margin-bottom: 10px;">
+                                <div style="color: var(--primary-color); font-weight: 800; margin-bottom: 4px;">大模型原始返回</div>
+                                <div style="white-space: pre-wrap; padding: 8px 10px; border: 1px solid rgba(255,255,255,0.08); background: rgba(0,0,0,0.25);">{{ row.llm_raw_response || '(未调用大模型 / 无返回)' }}</div>
+                            </div>
+                            <div style="margin-bottom: 10px;">
+                                <div style="color: var(--primary-color); font-weight: 800; margin-bottom: 4px;">解析结果 (JSON)</div>
+                                <div style="white-space: pre-wrap; font-family: 'Share Tech Mono', monospace; padding: 8px 10px; border: 1px solid rgba(255,255,255,0.08); background: rgba(0,0,0,0.25);">{{ formatJson(row.parsed_records_json) }}</div>
+                            </div>
+                            <div v-if="row.error">
+                                <div style="color: #f56c6c; font-weight: 800; margin-bottom: 4px;">错误</div>
+                                <div style="white-space: pre-wrap; color: #f56c6c;">{{ row.error }}</div>
+                            </div>
+                        </div>
+                    </template>
+                </el-table-column>
+                <el-table-column prop="created_at" label="时间" width="160" sortable></el-table-column>
+                <el-table-column prop="created_by" label="提交人" width="100"></el-table-column>
+                <el-table-column label="状态" width="90">
+                    <template #default="{ row }">
+                        <el-tag v-if="row.status === 'completed'" size="small" type="success" effect="dark">完成</el-tag>
+                        <el-tag v-else-if="row.status === 'failed'" size="small" type="danger" effect="dark">失败</el-tag>
+                        <el-tag v-else size="small" type="info" effect="dark">处理中</el-tag>
+                    </template>
+                </el-table-column>
+                <el-table-column label="来源" width="90">
+                    <template #default="{ row }">
+                        <span v-if="row.parse_source === 'llm'" style="color: var(--primary-color);">大模型</span>
+                        <span v-else-if="row.parse_source === 'fallback'" style="color: #f5a623;">规则</span>
+                        <span v-else style="color: var(--text-secondary);">{{ row.parse_source || '--' }}</span>
+                    </template>
+                </el-table-column>
+                <el-table-column prop="content" label="原始输入(摘要)" min-width="360" show-overflow-tooltip></el-table-column>
+                <el-table-column prop="record_ids" label="生成记录ID" min-width="120" show-overflow-tooltip></el-table-column>
+            </el-table>
+        </el-dialog>
+
+        <!-- 登录对话框 -->
+        <el-dialog v-model="showLoginDialog" :title="loginMode === 'viewer' ? '行情观察 · 注册/登录' : '操作员登录'" width="400px" center>
+            <div style="padding: 10px 0;">
+                <el-radio-group v-model="loginMode" size="small" style="margin-bottom: 18px; display: flex; width: 100%;">
+                    <el-radio-button label="operator" style="flex: 1;">交易账户</el-radio-button>
+                    <el-radio-button label="viewer" style="flex: 1;">行情观察</el-radio-button>
+                </el-radio-group>
+                <el-form v-if="loginMode === 'operator'" @submit.prevent="handleLogin" label-position="top">
+                    <el-form-item label="操作员 ID">
+                        <el-input v-model="loginForm.username" placeholder="请输入 ID..." />
+                    </el-form-item>
+                    <el-form-item label="访问密钥">
+                        <el-input v-model="loginForm.password" type="password" placeholder="请输入密钥..." show-password />
+                    </el-form-item>
+                </el-form>
+                <el-form v-else @submit.prevent="viewerLogin" label-position="top">
+                    <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 14px; line-height: 1.6;">
+                        注册即可查看每日「历史买入列表」，与交易账号相互独立。首次使用请先「注册」，之后用同一用户名密码「登录」。
+                    </div>
+                    <el-form-item label="用户名">
+                        <el-input v-model="viewerForm.username" placeholder="设置 / 输入用户名" />
+                    </el-form-item>
+                    <el-form-item label="密码">
+                        <el-input v-model="viewerForm.password" type="password" placeholder="设置 / 输入密码" show-password />
+                    </el-form-item>
+                </el-form>
+            </div>
+            <template #footer>
+                <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                    <el-button @click="showLoginDialog = false" style="font-family: 'Share Tech Mono', monospace;">取消</el-button>
+                    <template v-if="loginMode === 'operator'">
+                        <el-button type="primary" @click="handleLogin" style="font-family: 'Share Tech Mono', monospace; background: var(--primary-color); color: #000; border: none; font-weight: 800;">执行登录</el-button>
+                    </template>
+                    <template v-else>
+                        <el-button @click="viewerRegister" :loading="viewerAuthLoading" style="font-family: 'Share Tech Mono', monospace;">注册</el-button>
+                        <el-button type="primary" @click="viewerLogin" :loading="viewerAuthLoading" style="font-family: 'Share Tech Mono', monospace; background: var(--primary-color); color: #000; border: none; font-weight: 800;">登录</el-button>
+                    </template>
+                </div>
+            </template>
+        </el-dialog>
+
+        <!-- 资金调整对话框 -->
+        <el-dialog v-model="showAdjustmentDialog" title="累计盈亏矫正 (资金增减)" width="600px" center @open="loadAdjustments">
+            <div style="padding: 10px 0;">
+                <div style="margin-bottom: 20px; padding: 10px; background: rgba(0, 242, 255, 0.05); border: 1px solid rgba(0, 242, 255, 0.2); border-radius: 4px; font-size: 12px; color: var(--text-secondary);">
+                    提示: 累计盈亏 = 当前总资产 - 初始资金(10万) - 累计资金调整(净流入)。<br/>
+                    输入正数表示充值/转入资金，输入负数表示提现/转出资金。
+                </div>
+                
+                <el-form :model="adjustmentForm" label-position="top">
+                    <el-row :gutter="20">
+                        <el-col :span="8">
+                            <el-form-item label="调整日期">
+                                <el-date-picker v-model="adjustmentForm.date" type="datetime" placeholder="选择日期时间" value-format="YYYY-MM-DD HH:mm:ss" style="width: 100%;" />
+                            </el-form-item>
+                        </el-col>
+                        <el-col :span="8">
+                            <el-form-item label="调整金额">
+                                <el-input-number v-model="adjustmentForm.amount" :precision="2" :step="1000" style="width: 100%;" />
+                            </el-form-item>
+                        </el-col>
+                        <el-col :span="8">
+                            <el-form-item label="备注说明">
+                                <el-input v-model="adjustmentForm.remark" placeholder="例如: 初始追加、提现等" />
+                            </el-form-item>
+                        </el-col>
+                    </el-row>
+                    <el-row>
+                        <el-col :span="24" style="text-align: right;">
+                            <el-button type="primary" @click="submitAdjustment" :loading="adjusting" style="background: var(--primary-color); color: #000; border: none; font-weight: 800; padding: 0 30px;">确认添加</el-button>
+                        </el-col>
+                    </el-row>
+                </el-form>
+
+                <div style="margin-top: 20px;">
+                    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">
+                        <h4 style="font-size: 14px; margin:0; color: var(--text-secondary);">历史调整记录</h4>
+                        <el-button size="small" @click="recalcDailyRates" :loading="recalcRatesLoading" title="用修正后的公式重算所有历史每日收益率（出金不缩小当日本金基数）">重算历史收益率</el-button>
+                    </div>
+                    <el-table :data="adjustments" size="small" style="width: 100%; background: transparent;" max-height="300">
+                        <el-table-column prop="adjust_time" label="时间" width="160"></el-table-column>
+                        <el-table-column prop="amount" label="金额" width="120">
+                            <template #default="{ row }">
+                                <span :class="row.amount >= 0 ? 'profit' : 'loss'">
+                                    {{ row.amount >= 0 ? '+' : '' }}{{ row.amount.toLocaleString() }}
+                                </span>
+                            </template>
+                        </el-table-column>
+                        <el-table-column prop="remark" label="备注"></el-table-column>
+                        <el-table-column label="操作" width="80" align="center">
+                            <template #default="{ row }">
+                                <el-button type="danger" size="small" link @click="deleteAdjustment(row.id)">删除</el-button>
+                            </template>
+                        </el-table-column>
+                    </el-table>
+                </div>
+            </div>
+        </el-dialog>
+
+        <!-- 账号别名对话框 -->
+        <el-dialog v-model="showAliasDialog" title="设置账号别名" width="400px" custom-class="tech-dialog">
+            <el-form :model="aliasForm" label-width="80px">
+                <el-form-item label="账号 ID">
+                    <el-input v-model="aliasForm.account_id" disabled></el-input>
+                </el-form-item>
+                <el-form-item label="账号别名">
+                    <el-input v-model="aliasForm.alias" placeholder="例如：主力策略一号" maxlength="20" show-word-limit></el-input>
+                </el-form-item>
+            </el-form>
+            <template #footer>
+                <div style="display: flex; justify-content: flex-end; gap: 10px;">
+                    <el-button @click="showAliasDialog = false">取消</el-button>
+                    <el-button type="primary" @click="submitAliasUpdate">保存设置</el-button>
+                </div>
+            </template>
+        </el-dialog>
+
+        <!-- 用户管理与安全设置对话框 -->
+        <el-dialog v-model="showUserManagementDialog" title="用户管理与安全设置" width="760px" custom-class="tech-dialog">
+            <el-tabs v-model="activeUserTab">
+                <!-- 1. 清仓密码设置 -->
+                <el-tab-pane label="清仓密码" name="clear_password">
+                    <div style="padding: 15px 0;">
+                        <p style="color: var(--text-secondary); margin-bottom: 20px;">
+                            正在为账号 <span style="color: var(--primary-color); font-weight: bold;">{{ currentAccount.alias || currentAccountId }}</span> 设置清仓密码。
+                            该密码用于执行“一键清仓”等危险操作时的二次验证。
+                        </p>
+                        <el-form label-position="top">
+                            <el-form-item label="设置新密码">
+                                <el-input v-model="setClearPasswordForm.password" type="password" placeholder="请输入清仓密码" show-password></el-input>
+                            </el-form-item>
+                            <el-form-item label="确认新密码">
+                                <el-input v-model="setClearPasswordForm.confirmPassword" type="password" placeholder="请再次输入清仓密码" show-password></el-input>
+                            </el-form-item>
+                            <el-form-item>
+                                <el-button type="primary" @click="submitSetClearPassword" style="width: 100%;">保存清仓密码</el-button>
+                            </el-form-item>
+                        </el-form>
+                    </div>
+                </el-tab-pane>
+
+                <!-- 2. 修改登录密码 -->
+                <el-tab-pane label="修改登录密码" name="change_login_password">
+                    <div style="padding: 15px 0;">
+                        <p style="color: var(--text-secondary); margin-bottom: 20px;">
+                            修改当前登录用户 <span style="color: var(--primary-color); font-weight: bold;">{{ currentUser?.username }}</span> 的登录密码。
+                        </p>
+                        <el-form label-position="top">
+                            <el-form-item label="原密码">
+                                <el-input v-model="changeLoginPasswordForm.oldPassword" type="password" placeholder="请输入原登录密码" show-password></el-input>
+                            </el-form-item>
+                            <el-form-item label="新密码">
+                                <el-input v-model="changeLoginPasswordForm.newPassword" type="password" placeholder="请输入新登录密码" show-password></el-input>
+                            </el-form-item>
+                            <el-form-item label="确认新密码">
+                                <el-input v-model="changeLoginPasswordForm.confirmPassword" type="password" placeholder="请再次输入新登录密码" show-password></el-input>
+                            </el-form-item>
+                            <el-form-item>
+                                <el-button type="primary" @click="submitChangeLoginPassword" style="width: 100%;">确认修改并重新登录</el-button>
+                            </el-form-item>
+                        </el-form>
+                    </div>
+                </el-tab-pane>
+
+                <!-- 3. 用户管理 (仅管理员) -->
+                <el-tab-pane label="用户管理" name="user_management" v-if="currentUser?.role === 'admin'">
+                    <div style="padding: 15px 0;">
+                        <div style="margin-bottom: 20px;">
+                            <h4 style="margin-bottom: 15px;">创建新用户</h4>
+                            <el-form :inline="true" size="small">
+                                <el-form-item>
+                                    <el-input v-model="newUserForm.username" placeholder="用户名"></el-input>
+                                </el-form-item>
+                                <el-form-item>
+                                    <el-input v-model="newUserForm.password" type="password" placeholder="密码" show-password></el-input>
+                                </el-form-item>
+                                <el-form-item>
+                                    <el-input v-model="newUserForm.account_id" placeholder="账号ID"></el-input>
+                                </el-form-item>
+                                <el-form-item>
+                                    <el-button type="success" @click="submitCreateUser">创建</el-button>
+                                </el-form-item>
+                            </el-form>
+                        </div>
+                        
+                        <div>
+                            <h4 style="margin-bottom: 15px;">用户列表</h4>
+                            <el-table :data="adminUsersList" size="small" border style="width: 100%">
+                                <el-table-column prop="username" label="用户名" width="100"></el-table-column>
+                                <el-table-column prop="account_id" label="账号ID" width="100"></el-table-column>
+                                <el-table-column prop="alias" label="别名" width="120" show-overflow-tooltip>
+                                    <template #default="scope">
+                                        {{ scope.row.alias || '-' }}
+                                    </template>
+                                </el-table-column>
+                                <el-table-column prop="role" label="角色" width="60"></el-table-column>
+                                <el-table-column prop="created_at" label="创建时间"></el-table-column>
+                                <el-table-column label="状态" width="70" align="center">
+                                    <template #default="scope">
+                                        <el-tag v-if="scope.row.is_dormant" type="info" size="small">休眠</el-tag>
+                                        <el-tag v-else type="success" size="small">活跃</el-tag>
+                                    </template>
+                                </el-table-column>
+                                <el-table-column label="操作" width="180" align="center">
+                                    <template #default="scope">
+                                        <el-button
+                                            size="small"
+                                            :type="scope.row.is_dormant ? 'success' : 'warning'"
+                                            plain
+                                            @click="toggleDormant(scope.row)"
+                                            style="margin-right:4px;">
+                                            {{ scope.row.is_dormant ? '激活' : '休眠' }}
+                                        </el-button>
+                                        <el-button 
+                                            size="small" 
+                                            type="danger" 
+                                            plain
+                                            :disabled="scope.row.username === currentUser?.username"
+                                            @click="deleteUser(scope.row)">
+                                            删除
+                                        </el-button>
+                                    </template>
+                                </el-table-column>
+                            </el-table>
+                        </div>
+                    </div>
+                </el-tab-pane>
+
+                <!-- 4. 大模型配置 (仅管理员) -->
+                <el-tab-pane label="大模型配置" name="llm_config" v-if="currentUser?.role === 'admin'">
+                    <div v-loading="llmConfigLoading" style="padding: 15px 0;">
+                        <el-form label-position="top">
+                            <el-form-item label="API URL">
+                                <el-input v-model="llmConfigForm.api_url" placeholder="例如：https://api.openai.com/v1 或 https://api.openai.com/v1/chat/completions"></el-input>
+                            </el-form-item>
+                            <el-form-item label="API Key">
+                                <el-input v-model="llmConfigForm.api_key" type="password" placeholder="请输入大模型 API Key" show-password></el-input>
+                            </el-form-item>
+                            <el-form-item label="Model">
+                                <el-input v-model="llmConfigForm.model" placeholder="例如：gpt-4.1-mini、deepseek-chat"></el-input>
+                            </el-form-item>
+                            <el-form-item>
+                                <el-button type="primary" @click="saveLLMConfig" :loading="llmConfigSaving" style="width: 100%;">保存大模型配置</el-button>
+                            </el-form-item>
+                        </el-form>
+                    </div>
+                </el-tab-pane>
+                <el-tab-pane label="登录统计" name="login_stats" v-if="currentUser?.role === 'admin'">
+                    <div v-loading="userStatsLoading" style="padding: 6px 0;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <span style="font-size: 13px; font-weight: 800; color: var(--primary-color);">交易账户（{{ mergedAccountStats.length }}）</span>
+                            <el-button size="small" @click="loadUserStats" :loading="userStatsLoading">刷新</el-button>
+                        </div>
+                        <el-table :data="mergedAccountStats" size="small" max-height="230" empty-text="暂无账户">
+                            <el-table-column prop="alias" label="账户" min-width="110" show-overflow-tooltip></el-table-column>
+                            <el-table-column label="角色" width="72" align="center">
+                                <template #default="{ row }"><el-tag size="small" :type="row.role === 'admin' ? 'danger' : 'info'">{{ row.role === 'admin' ? '管理员' : '账户' }}</el-tag></template>
+                            </el-table-column>
+                            <el-table-column label="登录状态" width="84" align="center">
+                                <template #default="{ row }">
+                                    <span v-if="row.is_dormant" style="color: var(--text-secondary);">休眠</span>
+                                    <span v-else :style="{ color: row.online ? 'var(--profit-color)' : 'var(--text-secondary)', fontWeight: 800 }">{{ row.online ? '● 在线' : '○ 离线' }}</span>
+                                </template>
+                            </el-table-column>
+                            <el-table-column label="最近同步" width="150" show-overflow-tooltip>
+                                <template #default="{ row }">{{ row.last_sync || '--' }}</template>
+                            </el-table-column>
+                            <el-table-column prop="login_count_30d" label="30天登录" width="86" align="right"></el-table-column>
+                            <el-table-column label="最近登录" width="150" show-overflow-tooltip>
+                                <template #default="{ row }">{{ row.last_login || '--' }}</template>
+                            </el-table-column>
+                        </el-table>
+                        <div style="font-size: 13px; font-weight: 800; margin: 16px 0 8px; color: var(--primary-color);">行情观察用户（{{ (userStats.viewers || []).length }}）<span style="font-size: 11px; font-weight: 400; color: var(--text-secondary);">点左侧 ▶ 展开看各 IP 明细</span></div>
+                        <el-table :data="userStats.viewers || []" size="small" max-height="300" empty-text="暂无观察用户" row-key="username">
+                            <el-table-column type="expand">
+                                <template #default="{ row }">
+                                    <div style="padding: 6px 20px 12px;">
+                                        <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;">各 IP 明细（近30天）</div>
+                                        <el-table :data="row.ips || []" size="small" empty-text="暂无 IP 记录">
+                                            <el-table-column prop="ip" label="IP" min-width="130"></el-table-column>
+                                            <el-table-column prop="login_count" label="登录次数" width="90" align="right"></el-table-column>
+                                            <el-table-column label="在线时长" width="100" align="right">
+                                                <template #default="{ row }">{{ formatOnlineDuration(row.online_seconds) }}</template>
+                                            </el-table-column>
+                                            <el-table-column label="最近活跃" min-width="160">
+                                                <template #default="{ row }">{{ row.last_seen || row.last_login || '--' }}</template>
+                                            </el-table-column>
+                                        </el-table>
+                                    </div>
+                                </template>
+                            </el-table-column>
+                            <el-table-column prop="username" label="用户名" min-width="96" show-overflow-tooltip></el-table-column>
+                            <el-table-column prop="login_count_30d" label="30天登录" width="80" align="right"></el-table-column>
+                            <el-table-column label="累计在线" width="90" align="right">
+                                <template #default="{ row }">{{ formatOnlineDuration(row.online_seconds_30d) }}</template>
+                            </el-table-column>
+                            <el-table-column label="IP数" width="62" align="center">
+                                <template #default="{ row }"><span :style="{ color: (row.distinct_ip_30d||0) > 1 ? 'var(--loss-color)' : '', fontWeight: (row.distinct_ip_30d||0) > 1 ? 800 : 400 }">{{ row.distinct_ip_30d || 0 }}</span></template>
+                            </el-table-column>
+                            <el-table-column label="并发登录" width="104" align="center">
+                                <template #default="{ row }">
+                                    <el-tag v-if="(row.concurrency_count_30d||0) > 0" size="small" type="danger" :title="'最近并发: ' + (row.concurrency_last || '')">多人同时·{{ row.concurrency_count_30d }}</el-tag>
+                                    <span v-else style="color: var(--text-secondary);">—</span>
+                                </template>
+                            </el-table-column>
+                            <el-table-column label="最近IP" width="128" show-overflow-tooltip>
+                                <template #default="{ row }">{{ row.last_login_ip || '--' }}</template>
+                            </el-table-column>
+                            <el-table-column label="最近登录" width="150" show-overflow-tooltip>
+                                <template #default="{ row }">{{ row.last_login || '--' }}</template>
+                            </el-table-column>
+                        </el-table>
+                    </div>
+                </el-tab-pane>
+            </el-tabs>
+        </el-dialog>
+
+        <!-- strategy.ini 远程管理对话框 -->
+        <el-dialog v-model="showConfigDialog" title="远程策略配置 strategy.ini" width="700px" custom-class="tech-dialog">
+            <div style="padding: 10px 0;">
+                <div style="margin-bottom: 15px;">
+                    <label style="color: var(--text-secondary); font-size: 13px; display: block; margin-bottom: 5px;">目标账号</label>
+                    <el-select v-model="configAccountId" style="width: 100%;" @change="loadConfig">
+                        <el-option v-for="u in configTargetAccounts" :key="u.account_id"
+                                   :label="u.alias || u.account_id"
+                                   :value="u.account_id" />
+                    </el-select>
+                </div>
+                <div style="margin-bottom: 15px;">
+                    <label style="color: var(--text-secondary); font-size: 13px; display: block; margin-bottom: 5px;">
+                        策略配置内容 (strategy.ini)
+                        <span v-if="configLoadTime" style="margin-left: 10px; font-size: 11px;">上次拉取: {{ configLoadTime }}</span>
+                    </label>
+                    <el-input v-model="configContent"
+                              type="textarea"
+                              :rows="20"
+                              style="font-family: 'Courier New', monospace; font-size: 12px;"
+                              placeholder="加载中..." />
+                </div>
+                <div style="color: var(--text-secondary); font-size: 12px; line-height: 1.6;">
+                    <el-icon><Warning /></el-icon>
+                    修改后点击保存, QMT 端将在下次同步(约30秒)后自动热加载. 若内容未变更不会重复下发.
+                </div>
+            </div>
+            <template #footer>
+                <div style="display: flex; justify-content: flex-end; gap: 10px;">
+                    <el-button @click="showConfigDialog = false">关闭</el-button>
+                    <el-button type="success" @click="refreshConfig" :loading="configLoading">刷新</el-button>
+                    <el-button type="primary" @click="saveConfig" :loading="configSaving">保存下发</el-button>
+                </div>
+            </template>
+        </el-dialog>
+
+        <!-- 账号排序对话框 -->
+        <el-dialog v-model="showUserSortDialog" title="调整账号顺序" width="450px" custom-class="tech-dialog">
+            <div style="padding: 10px 0;">
+                <p style="color: var(--text-secondary); margin-bottom: 15px; font-size: 13px;">
+                    点击上下箭头调整账号在下拉菜单中的显示顺序
+                </p>
+                <div style="max-height: 400px; overflow-y: auto;">
+                    <div v-for="(user, index) in userSortList" :key="user.account_id" 
+                         style="display: flex; align-items: center; justify-content: space-between; 
+                                padding: 12px 15px; margin-bottom: 10px; 
+                                background: rgba(255,255,255,0.05); border-radius: 8px;
+                                border: 1px solid rgba(255,255,255,0.1);">
+                        <div style="display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0;">
+                            <span style="color: var(--primary-color); font-size: 13px; min-width: 24px; font-weight: 600;">{{ index + 1 }}</span>
+                            <div style="display: flex; flex-direction: column; min-width: 0;">
+                                <span v-if="user.alias && user.alias !== user.account_id" 
+                                      style="color: #e2e8f0; font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                                    {{ user.alias }}
+                                </span>
+                                <span :style="user.alias && user.alias !== user.account_id ? 'color: var(--text-secondary); font-size: 12px;' : 'color: #e2e8f0; font-size: 14px; font-weight: 500;'">
+                                    {{ user.account_id }}
+                                </span>
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 8px;">
+                            <el-button 
+                                size="small" 
+                                type="primary"
+                                :disabled="index === 0"
+                                @click="moveUserOrder(index, -1)"
+                                style="background: rgba(6, 182, 212, 0.2); border-color: rgba(6, 182, 212, 0.5); color: #06b6d4;">
+                                <el-icon style="margin-right: 4px;"><ArrowUp /></el-icon>上移
+                            </el-button>
+                            <el-button 
+                                size="small" 
+                                type="primary"
+                                :disabled="index === userSortList.length - 1"
+                                @click="moveUserOrder(index, 1)"
+                                style="background: rgba(6, 182, 212, 0.2); border-color: rgba(6, 182, 212, 0.5); color: #06b6d4;">
+                                <el-icon style="margin-right: 4px;"><ArrowDown /></el-icon>下移
+                            </el-button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <template #footer>
+                <div style="display: flex; justify-content: flex-end; gap: 10px;">
+                    <el-button @click="showUserSortDialog = false">取消</el-button>
+                    <el-button type="primary" @click="saveUserSort">保存顺序</el-button>
+                </div>
+            </template>
+        </el-dialog>
+
+        <!-- 一键清仓确认对话框 -->
+        <el-dialog v-model="showClearPositionsDialog" title="危险操作确认" width="400px" custom-class="tech-dialog">
+            <div style="padding: 10px 0;">
+                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 20px; color: var(--loss-color);">
+                    <el-icon size="24"><Warning /></el-icon>
+                    <span style="font-size: 16px; font-weight: bold;">确认要执行一键清仓吗？</span>
+                </div>
+                <p style="color: var(--text-secondary); line-height: 1.6; margin-bottom: 20px;">
+                    此操作将对账号 <span style="color: var(--primary-color); font-weight: bold;">{{ currentAccount.alias || currentAccountId }}</span> 下发指令。
+                    客户端将在下次同步数据时获取并执行该指令。
+                </p>
+                <div style="margin-bottom: 20px;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                        <span style="color: var(--text-secondary);">清仓比例</span>
+                        <span style="color: var(--primary-color); font-weight: bold;">{{ clearPositionsPercentage }}%</span>
+                    </div>
+                    <el-slider v-model="clearPositionsPercentage" :step="10" show-stops></el-slider>
+                </div>
+                <el-input 
+                    v-model="clearPositionsConfirmText" 
+                    placeholder="请输入 '一键清仓' 以确认" 
+                    maxlength="4"
+                    style="margin-bottom: 15px;"
+                ></el-input>
+                <el-input 
+                    v-model="clearPositionsPassword" 
+                    type="password"
+                    placeholder="请输入清仓密码" 
+                    show-password
+                ></el-input>
+            </div>
+            <template #footer>
+                <div style="display: flex; justify-content: flex-end; gap: 10px;">
+                    <el-button @click="showClearPositionsDialog = false">取消</el-button>
+                    <el-button
+                        type="danger"
+                        :disabled="clearPositionsConfirmText !== '一键清仓'"
+                        @click="submitClearPositions"
+                    >确认清仓</el-button>
+                </div>
+            </template>
+        </el-dialog>
+
+        <!-- 全账号一键清仓确认对话框（仅管理员） -->
+        <el-dialog v-model="showClearAllDialog" title="⚠️ 危险：全账号清仓" width="420px" custom-class="tech-dialog">
+            <div style="padding: 10px 0;">
+                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 20px; color: var(--loss-color);">
+                    <el-icon size="24"><Warning /></el-icon>
+                    <span style="font-size: 16px; font-weight: bold;">此操作将对所有账号下发清仓指令！</span>
+                </div>
+                <p style="color: var(--text-secondary); line-height: 1.6; margin-bottom: 20px;">
+                    每个账号在下次同步时将自动执行清仓操作，请确认后再提交。
+                </p>
+                <div style="margin-bottom: 20px;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                        <span style="color: var(--text-secondary);">清仓比例</span>
+                        <span style="color: var(--primary-color); font-weight: bold;">{{ clearAllPercentage }}%</span>
+                    </div>
+                    <el-slider v-model="clearAllPercentage" :step="10" show-stops></el-slider>
+                </div>
+                <el-input
+                    v-model="clearAllConfirmText"
+                    placeholder="请输入 '全部清仓' 以确认"
+                    maxlength="4"
+                    style="margin-bottom: 15px;"
+                ></el-input>
+                <el-input
+                    v-model="clearAllPassword"
+                    type="password"
+                    placeholder="请输入管理员清仓密码"
+                    show-password
+                ></el-input>
+            </div>
+            <template #footer>
+                <div style="display: flex; justify-content: flex-end; gap: 10px;">
+                    <el-button @click="showClearAllDialog = false">取消</el-button>
+                    <el-button
+                        type="danger"
+                        :disabled="clearAllConfirmText !== '全部清仓'"
+                        @click="submitClearAll"
+                    >确认全部清仓</el-button>
+                </div>
+            </template>
+        </el-dialog>
+
+        <!-- 卖出持仓确认对话框 -->
+        <el-dialog v-model="showSellPositionDialog" title="卖出持仓" width="400px" custom-class="tech-dialog">
+            <div style="padding: 10px 0;" v-if="sellPositionStock">
+                <div style="margin-bottom: 20px; text-align: center;">
+                    <span style="font-size: 18px; font-weight: bold; color: #fff;">{{ sellPositionStock.instrument_name || sellPositionStock.stock_code }}</span>
+                    <span style="font-size: 14px; color: var(--text-secondary); margin-left: 10px;">{{ sellPositionStock.stock_code }}</span>
+                </div>
+                <div style="margin-bottom: 20px;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                        <span style="color: var(--text-secondary);">卖出比例</span>
+                        <span style="color: var(--primary-color); font-weight: bold;">{{ sellPositionPercentage }}%</span>
+                    </div>
+                    <el-slider v-model="sellPositionPercentage" :step="10" show-stops></el-slider>
+                </div>
+                <p style="color: var(--text-secondary); line-height: 1.6; font-size: 12px;">
+                    点击确认后，下次同步持仓时将下发卖出指令。客户端执行后会自动清除卖出状态。
+                </p>
+            </div>
+            <template #footer>
+                <div style="display: flex; justify-content: flex-end; gap: 10px;">
+                    <el-button @click="showSellPositionDialog = false">取消</el-button>
+                    <el-button
+                        type="primary"
+                        @click="confirmSellPosition"
+                    >确认卖出</el-button>
+                </div>
+            </template>
+        </el-dialog>
+
+        <!-- 买入持仓确认对话框 -->
+        <el-dialog v-model="showBuyPositionDialog" title="买入持仓" width="400px" custom-class="tech-dialog">
+            <div style="padding: 10px 0;" v-if="buyPositionStock">
+                <div style="margin-bottom: 20px; text-align: center;">
+                    <span style="font-size: 18px; font-weight: bold; color: #fff;">{{ buyPositionStock.instrument_name || buyPositionStock.stock_code }}</span>
+                    <span style="font-size: 14px; color: var(--text-secondary); margin-left: 10px;">{{ buyPositionStock.stock_code }}</span>
+                </div>
+                <div style="margin-bottom: 10px;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                        <span style="color: var(--text-secondary);">买入比例（相对当前持仓量）</span>
+                        <span style="color: var(--primary-color); font-weight: bold;">{{ buyPositionPercentage }}%</span>
+                    </div>
+                    <el-slider v-model="buyPositionPercentage" :min="10" :max="200" :step="10" show-stops></el-slider>
+                </div>
+                <div style="margin-bottom: 15px; font-size: 12px; color: var(--text-secondary);">
+                    预计买入数量：<span style="color: var(--primary-color); font-weight: bold;">{{ calcBuyAmount(buyPositionStock, buyPositionPercentage) }} 股</span>
+                    <span style="margin-left: 5px;">(100% = 当前持仓量 {{ buyPositionStock ? buyPositionStock.volume : 0 }} 股，取整至100的整数倍)</span>
+                </div>
+                <p style="color: var(--text-secondary); line-height: 1.6; font-size: 12px;">
+                    点击确认后，下次同步持仓时将下发买入指令。客户端执行后会自动清除买入状态。
+                </p>
+            </div>
+            <template #footer>
+                <div style="display: flex; justify-content: flex-end; gap: 10px;">
+                    <el-button @click="showBuyPositionDialog = false">取消</el-button>
+                    <el-button
+                        type="primary"
+                        @click="confirmBuyPosition"
+                    >确认买入</el-button>
+                </div>
+            </template>
+        </el-dialog>
+
+        <!-- 买入新股票对话框 -->
+        <el-dialog v-model="showNewBuyDialog" title="买入新股票" width="420px" custom-class="tech-dialog">
+            <div style="padding: 10px 0;">
+                <div style="margin-bottom: 18px;">
+                    <div style="color: var(--text-secondary); font-size: 13px; margin-bottom: 8px;">搜索股票（名称或代码）</div>
+                    <el-select
+                        v-model="newBuySelectedStock"
+                        filterable
+                        remote
+                        :remote-method="searchStocksRemote"
+                        placeholder="输入股票名称或代码搜索"
+                        style="width: 100%;"
+                        value-key="ts_code"
+                        clearable>
+                        <el-option
+                            v-for="item in newBuyStockOptions"
+                            :key="item.ts_code"
+                            :label="item.name + '  ' + item.ts_code"
+                            :value="item">
+                            <span style="font-weight: bold;">{{ item.name }}</span>
+                            <el-tag v-if="item.is_etf" size="small" type="warning" effect="plain" style="margin-left: 6px; height: 18px; line-height: 16px; padding: 0 5px;">ETF</el-tag>
+                            <span style="float: right; color: var(--text-secondary); font-size: 12px; font-family: monospace;">{{ item.ts_code }}</span>
+                        </el-option>
+                    </el-select>
+                </div>
+                <div style="margin-bottom: 18px;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                        <span style="color: var(--text-secondary); font-size: 13px;">
+                            买入数量（{{ newBuySpec.kindName }}，{{ newBuySpec.min }}{{ newBuySpec.unit }}起，步进 {{ newBuySpec.step }}）
+                        </span>
+                        <span style="color: var(--primary-color); font-weight: bold;">{{ newBuyAmount }} {{ newBuySpec.unit }}</span>
+                    </div>
+                    <el-input-number
+                        v-model="newBuyAmount"
+                        :min="newBuySpec.min"
+                        :step="newBuySpec.step"
+                        :precision="0"
+                        style="width: 100%;"
+                        controls-position="right" />
+                </div>
+                <p style="color: var(--text-secondary); line-height: 1.6; font-size: 12px;">
+                    点击确认后<b>立即报单到大QMT</b>，返回真实委托号。若被服务端风控拦下会直接提示原因。
+                    <span v-if="newBuySpec.t0">该品种支持 T+0，当日可回转交易。</span>
+                </p>
+            </div>
+            <template #footer>
+                <div style="display: flex; justify-content: flex-end; gap: 10px;">
+                    <el-button @click="showNewBuyDialog = false">取消</el-button>
+                    <el-button
+                        type="danger"
+                        plain
+                        :disabled="!newBuySelectedStock"
+                        @click="confirmNewBuy(true)"
+                    >强制买入</el-button>
+                    <el-button
+                        type="primary"
+                        :disabled="!newBuySelectedStock"
+                        @click="confirmNewBuy()"
+                    >确认买入</el-button>
+                </div>
+            </template>
+        </el-dialog>
+
+        <!-- 历史买入列表 · 买入下发对话框 -->
+        <el-dialog v-model="showMarketBuyDialog" title="买入下发" width="420px" custom-class="tech-dialog">
+            <div v-if="marketBuyStock" style="padding: 10px 0;">
+                <div style="margin-bottom: 18px; display: flex; justify-content: space-between; align-items: baseline;">
+                    <span style="font-weight: bold; color: #fff; font-size: 16px;">{{ marketBuyStock.stock_name }}</span>
+                    <span style="color: var(--text-secondary); font-family: monospace;">{{ marketBuyStock.ts_code || marketBuyStock.stock_code }}</span>
+                </div>
+                <div style="margin-bottom: 18px;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                        <span style="color: var(--text-secondary); font-size: 13px;">买入股数（100的整数倍）</span>
+                        <span style="color: var(--primary-color); font-weight: bold;">{{ marketBuyAmount }} 股</span>
+                    </div>
+                    <el-input-number
+                        v-model="marketBuyAmount"
+                        :min="100"
+                        :step="100"
+                        :precision="0"
+                        style="width: 100%;"
+                        controls-position="right" />
+                </div>
+                <p style="color: var(--text-secondary); line-height: 1.6; font-size: 12px;">
+                    点击确认后，下次同步持仓时将下发买入指令。客户端执行后会自动清除买入状态。
+                </p>
+            </div>
+            <template #footer>
+                <div style="display: flex; justify-content: flex-end; gap: 10px;">
+                    <el-button @click="showMarketBuyDialog = false">取消</el-button>
+                    <el-button type="danger" plain @click="confirmMarketBuy(true)">强制买入</el-button>
+                    <el-button type="primary" @click="confirmMarketBuy()">确认买入</el-button>
+                </div>
+            </template>
+        </el-dialog>
+    </div>
+
+    <script src="vue-app.js?v=viewer-ip-20260807"></script>
+</body>
+</html>

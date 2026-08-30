@@ -1,0 +1,10 @@
+{
+  "_note": "研究记录板同步到 MySQL。复制为 config/mysql_sync.json 后填写；环境变量 MYSQL_HOST/PORT/USER/PASSWORD/DB 优先。enabled=false 或不配置则记录板只存本地 SQLite。",
+  "enabled": false,
+  "host": "your-mysql-host",
+  "port": 3306,
+  "user": "",
+  "password": "",
+  "database": "stock_db_daily",
+  "table": "research_board_records"
+}

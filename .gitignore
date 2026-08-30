@@ -1,0 +1,29 @@
+# 本地配置（含密钥），只提交 *.example.json 模板
+config/*.json
+!config/*.example.json
+mysql_sync_config.json
+proxy_config.json
+.env
+
+# 运行期产物
+dashboard_*_data.json
+backup/
+logs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# 数据库
+*.db
+*.db-shm
+*.db-wal
+
+# 编辑器 / 截图
+.vscode/
+.trae/
+*.png
+*.jpeg
+*.jpg

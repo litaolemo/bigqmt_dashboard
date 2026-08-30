@@ -1,0 +1,5 @@
+{
+  "_note": "东方财富接口的可选隧道代理。机房 IP 常被东财掐（RemoteDisconnected），此时转债比价表和实时涨跌幅的东财兜底源会失败。复制为 config/proxy.json 并填 url 即可走隧道；enabled=false 或不配置则直连。",
+  "enabled": false,
+  "url": "http://user:pass@your-proxy-host:port/"
+}

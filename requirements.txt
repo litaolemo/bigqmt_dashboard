@@ -1,0 +1,18 @@
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+python-multipart>=0.0.6
+python-jose[cryptography]>=3.3.0
+passlib==1.7.4
+bcrypt==3.2.2
+requests>=2.31.0
+pydantic>=2.0.0
+akshare>=1.13.0
+tushare>=1.2.89
+pandas>=1.5.0
+
+# 大QMT 直连（把大QMT 内置 Python 包装成 RPC，接口与 miniQMT 同名）
+# https://github.com/litaolemo/xtquant_big_convert
+xtquant-big-convert[redis]>=0.1.0
+
+# 可选：pymysql 只在配了 MySQL 时才用到
+pymysql>=1.0.0

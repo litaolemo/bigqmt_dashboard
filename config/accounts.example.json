@@ -1,0 +1,36 @@
+{
+  "_note": "复制为 config/accounts.json 后填写。每个账号一条，可以连不同机器上的大QMT。rpc 段整包透传给 xtquant_big_convert 的 BigQmtRpcClient，换 zmq/mysql 传输只改这里。",
+  "quote_account_id": "",
+  "accounts": [
+    {
+      "account_id": "YOUR_ACCOUNT_ID",
+      "alias": "主号",
+      "enabled": true,
+      "account_type": "STOCK",
+      "allow_order": false,
+      "timeout_seconds": 6.0,
+      "poll_seconds": 4.0,
+      "idle_poll_seconds": 60.0,
+      "rpc": {
+        "transport": "redis",
+        "host": "127.0.0.1",
+        "port": 6379,
+        "db": 5,
+        "username": "",
+        "password": ""
+      }
+    },
+    {
+      "_note": "同机低延迟示例：transport 改 zmq，需要 rpc_background_threads=True",
+      "account_id": "ANOTHER_ACCOUNT_ID",
+      "alias": "副号",
+      "enabled": false,
+      "allow_order": false,
+      "rpc": {
+        "transport": "zmq",
+        "rpc_background_threads": true,
+        "zmq": { "host": "127.0.0.1" }
+      }
+    }
+  ]
+}
