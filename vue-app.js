@@ -274,6 +274,63 @@ const app = createApp({
         const newBuySpec = computed(() =>
             instrumentSpec(newBuySelectedStock.value && newBuySelectedStock.value.ts_code));
 
+        // 下单方式：'volume' 按数量 / 'cash' 按金额
+        const newBuyMode = ref('volume');
+        const newBuyCash = ref(10000);
+        // 服务端算出来的换算结果。前端不自己算 —— 只有服务端同时握着实时价和品种
+        // 规整规则，自己算出来的数会和实际报单量对不上。
+        const newBuyQuote = ref(null);
+        const newBuyQuoteLoading = ref(false);
+
+        let quoteTimer = null;
+        const refreshNewBuyQuote = () => {
+            const stock = newBuySelectedStock.value;
+            if (!stock || !stock.ts_code) { newBuyQuote.value = null; return; }
+            if (quoteTimer) clearTimeout(quoteTimer);
+            quoteTimer = setTimeout(async () => {
+                const params = newBuyMode.value === 'cash'
+                    ? `cash_amount=${newBuyCash.value || 0}`
+                    : `volume=${newBuyAmount.value || 0}`;
+                newBuyQuoteLoading.value = true;
+                try {
+                    const resp = await fetch(`/api/instrument/${encodeURIComponent(stock.ts_code)}?${params}`, {
+                        headers: { 'Authorization': `Bearer ${accessToken.value}` }
+                    });
+                    newBuyQuote.value = resp.ok ? (await resp.json()).instrument : null;
+                } catch (e) {
+                    console.error('获取品种/报价失败', e);
+                    newBuyQuote.value = null;
+                } finally {
+                    newBuyQuoteLoading.value = false;
+                }
+            }, 300);
+        };
+
+        watch([newBuySelectedStock, newBuyMode, newBuyAmount, newBuyCash], () => {
+            // 换了标的就把数量重置到该品种的最小申报量，免得留着上一个品种的数
+            refreshNewBuyQuote();
+        });
+
+        watch(newBuySelectedStock, (stock) => {
+            const spec = instrumentSpec(stock && stock.ts_code);
+            if (newBuyAmount.value < spec.min) newBuyAmount.value = spec.min;
+        });
+
+        // 按金额模式下，实际会报出去的数量
+        const newBuyResolvedVolume = computed(() => {
+            if (newBuyMode.value !== 'cash') return newBuyAmount.value;
+            return (newBuyQuote.value && newBuyQuote.value.volume_for_cash) || 0;
+        });
+
+        const newBuyEstimatedCash = computed(() =>
+            (newBuyQuote.value && newBuyQuote.value.estimated_cash) || null);
+
+        const newBuyLastPrice = computed(() =>
+            (newBuyQuote.value && newBuyQuote.value.last_price) || null);
+
+        const newBuyCashError = computed(() =>
+            (newBuyQuote.value && newBuyQuote.value.cash_error) || '');
+
         // 表格列配置
         const positionColumns = ref([
             { prop: 'is_locked', label: '锁定', width: '50', align: 'center' },
@@ -2594,6 +2651,9 @@ const app = createApp({
             newBuyStockOptions.value = [];
             newBuySelectedStock.value = null;
             newBuyAmount.value = 100;
+            newBuyMode.value = 'volume';
+            newBuyCash.value = 10000;
+            newBuyQuote.value = null;
             showNewBuyDialog.value = true;
         };
 
@@ -2628,22 +2688,38 @@ const app = createApp({
                 ElementPlus.ElMessage.warning('请先选择股票');
                 return;
             }
-            // 按品种校验：转债 10 张起步进 10，科创板 200 股起按 1 递增。
-            // 改造前这里写死「100 的整数倍」，转债根本下不了单。
             const spec = newBuySpec.value;
-            const amount = newBuyAmount.value;
-            if (!amount || amount < spec.min || (amount - spec.min) % spec.step !== 0) {
-                ElementPlus.ElMessage.warning(
-                    `${spec.kindName}最少 ${spec.min}${spec.unit}，之后按 ${spec.step}${spec.unit} 递增`);
-                return;
+            if (newBuyMode.value === 'cash') {
+                if (!newBuyCash.value || newBuyCash.value <= 0) {
+                    ElementPlus.ElMessage.warning('请填写买入金额');
+                    return;
+                }
+                if (newBuyCashError.value) {
+                    ElementPlus.ElMessage.warning(newBuyCashError.value);
+                    return;
+                }
+            } else {
+                // 按品种校验：转债 10 张起步进 10，科创板 200 股起按 1 递增。
+                // 改造前这里写死「100 的整数倍」，转债根本下不了单。
+                const amount = newBuyAmount.value;
+                if (!amount || amount < spec.min || (amount - spec.min) % spec.step !== 0) {
+                    ElementPlus.ElMessage.warning(
+                        `${spec.kindName}最少 ${spec.min}${spec.unit}，之后按 ${spec.step}${spec.unit} 递增`);
+                    return;
+                }
             }
             try {
                 const payload = {
                     account_id: currentAccountId.value,
                     stock_code: newBuySelectedStock.value.ts_code,
-                    stock_name: newBuySelectedStock.value.name,
-                    amount: newBuyAmount.value
+                    stock_name: newBuySelectedStock.value.name
                 };
+                // 按金额下单交给服务端换算：它有实时价，也有品种规整规则
+                if (newBuyMode.value === 'cash') {
+                    payload.cash_amount = newBuyCash.value;
+                } else {
+                    payload.amount = newBuyAmount.value;
+                }
                 if (force === true) {
                     payload.force = true;
                 }
@@ -2670,6 +2746,22 @@ const app = createApp({
         };
 
         // 计算买入数量（展示用）
+        // 加仓弹窗的预计金额：数量 × 现价，现价直接用持仓行上的
+        const calcBuyCash = (row, percentage) => {
+            const volume = calcBuyAmount(row, percentage);
+            const price = row && (row.last_price || row.avg_price);
+            if (!volume || !price) return null;
+            return volume * price;
+        };
+
+        const formatCash = (value) => {
+            if (value === null || value === undefined) return '—';
+            const n = Number(value);
+            if (!isFinite(n)) return '—';
+            return n >= 10000 ? (n / 10000).toFixed(2) + ' 万元'
+                              : n.toFixed(2) + ' 元';
+        };
+
         const calcBuyAmount = (row, percentage) => {
             if (!row || !row.volume) return 0;
             const spec = instrumentSpec(row.stock_code);
@@ -4187,6 +4279,16 @@ const app = createApp({
             newBuySelectedStock,
             newBuyAmount,
             newBuySpec,
+            newBuyMode,
+            newBuyCash,
+            newBuyQuote,
+            newBuyQuoteLoading,
+            newBuyResolvedVolume,
+            newBuyEstimatedCash,
+            newBuyLastPrice,
+            newBuyCashError,
+            calcBuyCash,
+            formatCash,
             instrumentSpec,
             formatOrderResult,
             openNewBuyDialog,

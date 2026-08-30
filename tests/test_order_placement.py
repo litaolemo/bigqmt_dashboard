@@ -243,6 +243,100 @@ class OrderEndpointTests(unittest.TestCase):
         self.assertIn("资金不足", response.json()["detail"])
 
 
+class CashAmountOrderTests(unittest.TestCase):
+    """按金额下单：服务端用实时价换算成数量，再按品种规整。
+
+    换算必须在服务端做 —— 只有它同时握着实时价和规整规则，前端自己算会和
+    实际报单量对不上。
+    """
+
+    account = "cash-order-test"
+
+    def setUp(self):
+        app_module.app.dependency_overrides[app_module.get_current_user] = admin_user
+        self.client = TestClient(app_module.app)
+        self.bridge = FakeBridge([self.account]).__enter__()
+        self._price = app_module.bridge_market.last_price
+        self._clean()
+
+    def tearDown(self):
+        app_module.bridge_market.last_price = self._price
+        self.bridge.__exit__(None, None, None)
+        self.client.close()
+        app_module.app.dependency_overrides.clear()
+        self._clean()
+
+    def _clean(self):
+        conn = app_module.get_db_connection()
+        cur = conn.cursor()
+        for t in ("trading_status", "position_locks", "order_audit", "orders"):
+            cur.execute("DELETE FROM %s WHERE account_id = ?" % t, (self.account,))
+        conn.commit()
+        conn.close()
+
+    def _price_is(self, value):
+        app_module.bridge_market.last_price = lambda code: value
+
+    def test_cash_amount_converts_to_whole_lots_for_stocks(self):
+        self._price_is(9.00)
+        response = self.client.post("/api/position/buy_new", json={
+            "account_id": self.account, "stock_code": "600000.SH", "cash_amount": 50000})
+        self.assertEqual(response.status_code, 200, response.text)
+        # 50000 / 9.00 = 5555 股 -> 整手取整 5500
+        self.assertEqual(self.bridge.orders[0]["order_volume"], 5500)
+
+    def test_cash_amount_converts_to_ten_lots_for_convertible_bonds(self):
+        self._price_is(163.19)
+        response = self.client.post("/api/position/buy_new", json={
+            "account_id": self.account, "stock_code": "123281.SZ", "cash_amount": 50000})
+        self.assertEqual(response.status_code, 200, response.text)
+        # 50000 / 163.19 = 306 张 -> 10 张步进取整 300
+        self.assertEqual(self.bridge.orders[0]["order_volume"], 300)
+        self.assertEqual(response.json()["unit"], "张")
+
+    def test_star_board_uses_capital_more_fully_thanks_to_one_share_step(self):
+        self._price_is(125.88)
+        response = self.client.post("/api/position/buy_new", json={
+            "account_id": self.account, "stock_code": "688981.SH", "cash_amount": 50000})
+        self.assertEqual(response.status_code, 200, response.text)
+        # 科创板 200 股起、按 1 股递增 -> 397 股，而不是整手规整到 300
+        self.assertEqual(self.bridge.orders[0]["order_volume"], 397)
+
+    def test_cash_below_one_lot_is_rejected_with_the_amount_needed(self):
+        self._price_is(163.19)
+        response = self.client.post("/api/position/buy_new", json={
+            "account_id": self.account, "stock_code": "123281.SZ", "cash_amount": 500})
+        self.assertEqual(response.status_code, 400)
+        detail = response.json()["detail"]
+        self.assertIn("不够一手", detail)
+        self.assertIn("1631.90", detail)      # 明确告诉用户还差多少
+        self.assertEqual(self.bridge.orders, [])
+
+    def test_missing_live_price_refuses_rather_than_guessing(self):
+        # 拿不到实时价时宁可报错，也不能用昨收或者猜的价格决定买多少
+        self._price_is(None)
+        response = self.client.post("/api/position/buy_new", json={
+            "account_id": self.account, "stock_code": "600000.SH", "cash_amount": 50000})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("取不到", response.json()["detail"])
+        self.assertEqual(self.bridge.orders, [])
+
+    def test_neither_amount_nor_cash_is_rejected(self):
+        response = self.client.post("/api/position/buy_new", json={
+            "account_id": self.account, "stock_code": "600000.SH"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("数量或买入金额", response.json()["detail"])
+
+    def test_instrument_endpoint_previews_both_directions(self):
+        self._price_is(9.00)
+        volume_side = self.client.get("/api/instrument/600000.SH?volume=1000").json()["instrument"]
+        self.assertEqual(volume_side["estimated_cash"], 9000.0)
+
+        cash_side = self.client.get("/api/instrument/600000.SH?cash_amount=50000").json()["instrument"]
+        self.assertEqual(cash_side["volume_for_cash"], 5500)
+        self.assertEqual(cash_side["estimated_cash"], 49500.0)
+
+
 class OrderGatewayGuardTests(unittest.TestCase):
     """不依赖 HTTP 的闸门测试。"""
 

@@ -194,7 +194,9 @@ app.add_middleware(
 )
 
 # 数据库连接
-DB_PATH = "dashboard.db"
+# 数据库位置。默认仓库根目录下的 dashboard.db；部署时可用 DASHBOARD_DB_PATH
+# 指到别处（挂载卷、独立数据盘），也方便拿副本跑而不碰生产库。
+DB_PATH = os.getenv("DASHBOARD_DB_PATH", "dashboard.db")
 
 def get_db_connection():
     """获取数据库连接并设置 WAL 模式"""
@@ -5512,12 +5514,15 @@ class BuyPositionCommand(BaseModel):
     percentage: int
 
 
-# 新买入股票指令模型（直接指定数量，不依赖已有持仓）
+# 新买入指令模型。两种下单方式二选一：
+#   amount      按数量（股/份/张，单位随品种）
+#   cash_amount 按金额（元），服务端用实时价换算成数量再按品种规整
 class NewBuyPositionCommand(BaseModel):
     account_id: str
     stock_code: str
     stock_name: str = ""
-    amount: int  # 买入股数（100的整数倍）
+    amount: int = 0
+    cash_amount: float = 0.0
     force: bool = False
 
 
@@ -5697,6 +5702,34 @@ def cancel_open_orders(account_id, stock_code=None, side=None, operator=""):
     return results
 
 
+def volume_from_cash(stock_code, cash_amount, price=None):
+    """把「我要买 N 元」换算成可申报数量。
+
+    返回 (volume, price, error)。价格取实时价；取不到就没法换算 —— 这时宁可报错，
+    也不能拿昨收或者瞎猜的价格去决定买多少。
+    """
+    try:
+        cash_amount = float(cash_amount or 0)
+    except (TypeError, ValueError):
+        return 0, None, "金额格式不对"
+    if cash_amount <= 0:
+        return 0, None, "金额必须大于 0"
+
+    price = price or bridge_market.last_price(stock_code)
+    if not price or price <= 0:
+        return 0, None, "取不到 %s 的实时价，无法按金额换算数量" % stock_code
+
+    spec = instruments.describe(stock_code)
+    raw = int(cash_amount // price)
+    volume = instruments.round_volume(stock_code, raw)
+    if volume <= 0:
+        need = spec["min_volume"] * price
+        return 0, price, ("%.2f 元不够一手：%s 最少 %d%s，约需 %.2f 元"
+                          % (cash_amount, spec["code"], spec["min_volume"],
+                             spec["unit"], need))
+    return volume, price, ""
+
+
 def order_response(result):
     """把 bridge.orders 的结果翻成接口响应；被拒/失败一律 400 带原因。"""
     if result.get("ok"):
@@ -5782,8 +5815,63 @@ async def search_stocks(
         stocks = collect(load_stock_basic_items(), False, 50)
         etfs = collect(load_etf_items(), True, 30)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"查询股票列表失败: {str(e)}")
-    return stocks + etfs
+        print(f"[下单搜索] MySQL 名录不可用，只用本地来源: {e}")
+        stocks, etfs = [], []
+
+    # 转债不在 bak_basic 里，永远得从这儿来；顺便在没配 MySQL 时兜住股票搜索。
+    bonds = collect(load_bond_search_items(), False, 30)
+    holdings = collect(load_holding_search_items(), False, 20)
+
+    seen = set()
+    merged = []
+    for row in stocks + etfs + bonds + holdings:
+        if row["ts_code"] in seen:
+            continue
+        seen.add(row["ts_code"])
+        merged.append(row)
+    return merged
+
+
+def load_bond_search_items():
+    """可转债名录，来自 cb_reference（akshare 日更）。"""
+    items = []
+    for row in cb_reference.load_all().values():
+        code = row.get("bond_code") or ""
+        name = row.get("bond_name") or ""
+        if not code:
+            continue
+        items.append({
+            "ts_code": code, "name": name, "symbol": code.split(".")[0],
+            "ts_lower": code.lower(), "name_lower": name.lower(),
+        })
+    return items
+
+
+def load_holding_search_items():
+    """自己持有的标的。搜不到别的时至少能搜到手上的票。"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute('''
+            SELECT DISTINCT stock_code, instrument_name FROM positions
+            WHERE volume > 0 AND stock_code IS NOT NULL
+        ''')
+        rows = cursor.fetchall()
+    except Exception:
+        return []
+    finally:
+        conn.close()
+    items = []
+    for code, name in rows:
+        code = (code or "").strip()
+        name = (name or "").strip()
+        if not code:
+            continue
+        items.append({
+            "ts_code": code, "name": name, "symbol": code.split(".")[0],
+            "ts_lower": code.lower(), "name_lower": name.lower(),
+        })
+    return items
 
 
 # 新买入股票指令（不依赖已有持仓，直接指定股数）
@@ -5802,8 +5890,18 @@ async def set_buy_new_position_command(
         raise HTTPException(status_code=403, detail="只能操作自己的账号")
 
     spec = instruments.describe(command.stock_code)
-    if (command.amount < spec["min_volume"]
-            or (command.amount - spec["min_volume"]) % spec["volume_step"] != 0):
+
+    # 按金额下单：服务端用实时价换算，保证换算结果就是实际报单量
+    volume = command.amount
+    if command.cash_amount and command.cash_amount > 0:
+        volume, _, error = volume_from_cash(command.stock_code, command.cash_amount)
+        if error:
+            raise HTTPException(status_code=400, detail=error)
+    elif volume <= 0:
+        raise HTTPException(status_code=400, detail="请给出买入数量或买入金额")
+
+    if (volume < spec["min_volume"]
+            or (volume - spec["min_volume"]) % spec["volume_step"] != 0):
         raise HTTPException(
             status_code=400,
             detail="%s 最少 %d%s，之后按 %d%s 递增" % (
@@ -5825,7 +5923,7 @@ async def set_buy_new_position_command(
     results = [
         bridge_orders.place_order(
             account_id=account_id, stock_code=command.stock_code,
-            side=bridge_orders.SIDE_BUY, volume=command.amount,
+            side=bridge_orders.SIDE_BUY, volume=volume,
             operator=operator, remark="buy_new", bypass=["stop_buy"],
         )
         for account_id in targets
@@ -5833,7 +5931,7 @@ async def set_buy_new_position_command(
 
     if command.account_id == "all":
         return batch_order_response(
-            results, "买入 %s %d%s" % (spec["code"], command.amount, spec["unit"]))
+            results, "买入 %s %d%s" % (spec["code"], volume, spec["unit"]))
     return order_response(results[0])
 
 
@@ -8084,11 +8182,16 @@ async def get_accounts_health(current_user: dict = Depends(get_current_admin)):
 
 
 @app.get("/api/instrument/{stock_code}")
-async def get_instrument_spec(stock_code: str,
-                              current_user: dict = Depends(get_current_user)):
-    """品种规则：单位、最小申报量、步进、价格精度、是否 T+0。
+async def get_instrument_spec(
+    stock_code: str,
+    cash_amount: float = Query(0, ge=0, description="给定金额时，换算出可申报数量"),
+    volume: int = Query(0, ge=0, description="给定数量时，估算下单金额"),
+    current_user: dict = Depends(get_current_user)
+):
+    """品种规则 + 实时价 + 数量/金额互算。
 
-    前端下单弹窗按这个切换步进和小数位 —— 股票 100 股 0.01，可转债 10 张 0.001。
+    前端下单弹窗按这个切换步进和小数位（股票 100 股 0.01，可转债 10 张 0.001），
+    并显示「预计下单金额」。换算放服务端做，保证和真正报单时的规整结果一致。
     """
     spec = instruments.describe(stock_code)
     spec["kind_name"] = {
@@ -8096,6 +8199,26 @@ async def get_instrument_spec(stock_code: str,
         instruments.KIND_BJ: "北交所", instruments.KIND_ETF: "ETF/LOF",
         instruments.KIND_BOND: "可转债",
     }.get(spec["kind"], "股票")
+
+    price = bridge_market.last_price(stock_code)
+    spec["last_price"] = price
+    spec["price_source"] = "bridge" if price else ""
+
+    # 数量 -> 预计金额
+    if volume > 0:
+        adjusted = instruments.round_volume(stock_code, volume)
+        spec["volume"] = adjusted
+        spec["volume_adjusted"] = adjusted != volume
+        spec["estimated_cash"] = round(adjusted * price, 2) if price else None
+
+    # 金额 -> 可申报数量
+    if cash_amount > 0:
+        resolved, used_price, error = volume_from_cash(stock_code, cash_amount, price)
+        spec["cash_amount"] = cash_amount
+        spec["volume_for_cash"] = resolved
+        spec["estimated_cash"] = round(resolved * used_price, 2) if resolved and used_price else None
+        spec["cash_error"] = error
+
     return {"status": "success", "instrument": spec}
 
 

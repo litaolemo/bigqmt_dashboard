@@ -62,26 +62,74 @@ def last_price(code):
     return value if value > 0 else None
 
 
-def get_minute_bars(codes, count=241, period="1m", field_list=None):
-    """拉分钟 K 线。
+def _bar_count(frame):
+    """一只标的返回了多少根 K 线。解析不了按 0 算。"""
+    if frame is None:
+        return 0
+    try:
+        return len(frame.to_dict("index") if hasattr(frame, "to_dict") else frame)
+    except Exception:
+        return 0
+
+
+def download_history(codes, period="1m", start_time="", end_time=""):
+    """让大QMT 把历史数据下载到它本地。返回成功与否。
+
+    xtdata 的读取语义是「读本地库」：没 download 过的标的，get_market_data_ex
+    会返回 0 根而不是报错。实测账号持仓的 10 只票全都没有 1m 数据（日线有），
+    所以缺数据时必须主动补下载。
+    """
+    wanted = [instruments.normalize_code(c) for c in (codes or []) if c]
+    if not wanted:
+        return False
+    try:
+        result = quote_handle().download_history_data2(
+            wanted, period, start_time, end_time)
+        print(f"[行情] 已向大QMT 下载 {period} 数据: {result}")
+        return True
+    except bridge_pool.BridgeUnavailable:
+        return False
+    except Exception as e:
+        print(f"[行情] download_history_data2 失败: {e}")
+        return False
+
+
+def get_minute_bars(codes, count=241, period="1m", field_list=None,
+                    download_if_missing=True):
+    """拉 K 线。缺数据的标的先让大QMT 下载再重试一次。
 
     这一条取代了改造前那套「服务端下发 backfill_kline 指令 → QMT 客户端拉分钟线 →
-    再 push 回服务端」的往返（app.py 的 detect_and_issue_backfill /
-    process_backfill_minute_data）。现在直接问大QMT 要。
+    再 push 回服务端」的往返。现在直接问大QMT 要。
+
+    download_if_missing=False 用于重试路径本身，避免无限套娃。
     """
     wanted = [instruments.normalize_code(c) for c in (codes or []) if c]
     if not wanted:
         return {}
+    fields = field_list or ["time", "open", "high", "low", "close", "volume"]
     try:
-        return quote_handle().get_market_data_ex(
-            field_list or ["time", "open", "high", "low", "close", "volume"],
-            wanted, period=period, count=count,
-        ) or {}
+        data = quote_handle().get_market_data_ex(
+            fields, wanted, period=period, count=count) or {}
     except bridge_pool.BridgeUnavailable:
         return {}
     except Exception as e:
         print(f"[行情] get_market_data_ex 失败: {e}")
         return {}
+
+    if not download_if_missing:
+        return data
+
+    missing = [c for c in wanted if _bar_count(data.get(c)) == 0]
+    if not missing:
+        return data
+
+    print(f"[行情] {len(missing)}/{len(wanted)} 只标的本地无 {period} 数据，先下载")
+    if not download_history(missing, period=period):
+        return data
+    retried = get_minute_bars(missing, count=count, period=period,
+                              field_list=fields, download_if_missing=False)
+    data.update({c: f for c, f in (retried or {}).items() if _bar_count(f) > 0})
+    return data
 
 
 def get_instrument_detail(code):

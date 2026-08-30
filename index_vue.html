@@ -2447,11 +2447,21 @@
                     <el-slider v-model="buyPositionPercentage" :min="10" :max="200" :step="10" show-stops></el-slider>
                 </div>
                 <div style="margin-bottom: 15px; font-size: 12px; color: var(--text-secondary);">
-                    预计买入数量：<span style="color: var(--primary-color); font-weight: bold;">{{ calcBuyAmount(buyPositionStock, buyPositionPercentage) }} 股</span>
-                    <span style="margin-left: 5px;">(100% = 当前持仓量 {{ buyPositionStock ? buyPositionStock.volume : 0 }} 股，取整至100的整数倍)</span>
+                    <div>
+                        预计买入数量：<span style="color: var(--primary-color); font-weight: bold;">
+                            {{ calcBuyAmount(buyPositionStock, buyPositionPercentage) }} {{ instrumentSpec(buyPositionStock && buyPositionStock.stock_code).unit }}</span>
+                    </div>
+                    <div style="margin-top: 4px;">
+                        预计下单金额：<span style="color: var(--warning-color, #e6a23c); font-weight: bold;">
+                            {{ formatCash(calcBuyCash(buyPositionStock, buyPositionPercentage)) }}</span>
+                        <span style="margin-left: 6px;">(按现价 {{ buyPositionStock ? buyPositionStock.last_price : '-' }} 估算)</span>
+                    </div>
+                    <div style="margin-top: 4px;">
+                        100% = 当前持仓 {{ buyPositionStock ? buyPositionStock.volume : 0 }}，按品种步进取整
+                    </div>
                 </div>
                 <p style="color: var(--text-secondary); line-height: 1.6; font-size: 12px;">
-                    点击确认后，下次同步持仓时将下发买入指令。客户端执行后会自动清除买入状态。
+                    点击确认后<b>立即报单到大QMT</b>，返回真实委托号。
                 </p>
             </div>
             <template #footer>
@@ -2490,11 +2500,20 @@
                         </el-option>
                     </el-select>
                 </div>
-                <div style="margin-bottom: 18px;">
+                <div style="margin-bottom: 14px;">
+                    <el-radio-group v-model="newBuyMode" size="small">
+                        <el-radio-button label="volume">按数量</el-radio-button>
+                        <el-radio-button label="cash">按金额</el-radio-button>
+                    </el-radio-group>
+                    <span style="margin-left: 10px; color: var(--text-secondary); font-size: 12px;">
+                        {{ newBuySpec.kindName }} · {{ newBuySpec.min }}{{ newBuySpec.unit }}起 · 步进 {{ newBuySpec.step }}
+                        <span v-if="newBuySpec.t0" style="color: var(--warning-color, #e6a23c);"> · T+0</span>
+                    </span>
+                </div>
+
+                <div v-if="newBuyMode === 'volume'" style="margin-bottom: 14px;">
                     <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
-                        <span style="color: var(--text-secondary); font-size: 13px;">
-                            买入数量（{{ newBuySpec.kindName }}，{{ newBuySpec.min }}{{ newBuySpec.unit }}起，步进 {{ newBuySpec.step }}）
-                        </span>
+                        <span style="color: var(--text-secondary); font-size: 13px;">买入数量</span>
                         <span style="color: var(--primary-color); font-weight: bold;">{{ newBuyAmount }} {{ newBuySpec.unit }}</span>
                     </div>
                     <el-input-number
@@ -2505,9 +2524,48 @@
                         style="width: 100%;"
                         controls-position="right" />
                 </div>
+
+                <div v-else style="margin-bottom: 14px;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                        <span style="color: var(--text-secondary); font-size: 13px;">买入金额（元）</span>
+                        <span style="color: var(--primary-color); font-weight: bold;">
+                            ≈ {{ newBuyResolvedVolume }} {{ newBuySpec.unit }}</span>
+                    </div>
+                    <el-input-number
+                        v-model="newBuyCash"
+                        :min="1000"
+                        :step="5000"
+                        :precision="0"
+                        style="width: 100%;"
+                        controls-position="right" />
+                </div>
+
+                <div style="margin-bottom: 14px; padding: 10px 12px; border-radius: 6px;
+                            background: rgba(255,255,255,0.03); font-size: 12px; line-height: 1.9;">
+                    <div>
+                        <span style="color: var(--text-secondary);">最新价：</span>
+                        <span style="font-weight: bold;">{{ newBuyLastPrice !== null ? newBuyLastPrice : '—' }}</span>
+                        <span v-if="newBuyQuoteLoading" style="margin-left: 8px; color: var(--text-secondary);">计算中…</span>
+                    </div>
+                    <div>
+                        <span style="color: var(--text-secondary);">预计下单金额：</span>
+                        <span style="color: var(--warning-color, #e6a23c); font-weight: bold; font-size: 14px;">
+                            {{ formatCash(newBuyEstimatedCash) }}</span>
+                    </div>
+                    <div v-if="newBuyMode === 'cash' && newBuyResolvedVolume > 0" style="color: var(--text-secondary);">
+                        实际报单 {{ newBuyResolvedVolume }} {{ newBuySpec.unit }}（已按 {{ newBuySpec.step }}{{ newBuySpec.unit }} 步进取整）
+                    </div>
+                    <div v-if="newBuyCashError" style="color: var(--danger-color, #f56c6c);">
+                        {{ newBuyCashError }}
+                    </div>
+                    <div v-if="newBuyLastPrice === null && newBuySelectedStock" style="color: var(--text-secondary);">
+                        取不到实时价（大QMT 未连接？），金额换算不可用
+                    </div>
+                </div>
+
                 <p style="color: var(--text-secondary); line-height: 1.6; font-size: 12px;">
-                    点击确认后<b>立即报单到大QMT</b>，返回真实委托号。若被服务端风控拦下会直接提示原因。
-                    <span v-if="newBuySpec.t0">该品种支持 T+0，当日可回转交易。</span>
+                    点击确认后<b>立即报单到大QMT</b>，返回真实委托号。数量与金额的换算由服务端完成，
+                    和实际报单量一致。若被服务端风控拦下会直接提示原因。
                 </p>
             </div>
             <template #footer>

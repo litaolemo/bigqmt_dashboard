@@ -6,6 +6,24 @@
 
 完整支持可转债：10 张起步的下单规整、0.001 报价精度、溢价率/转股价值/双低、强赎进度与禁买闸门、打新债。
 
+![面板总览](docs/screenshots/01-overview.png)
+
+持仓表里股票和转债混着，转债多出三列 —— 溢价率、转股价值、强赎进度。算不出来的显示「—」并在
+tooltip 里说明原因，不会拿缺失的转股价凑一个看起来像模像样的数：
+
+![可转债列](docs/screenshots/02-positions-cb.png)
+
+手动下单支持**按数量**和**按金额**两种方式，都实时显示预计下单金额。金额↔数量的换算在服务端完成，
+因为只有服务端同时握着实时价和品种规整规则 —— 前端自己算会和实际报单量对不上：
+
+| 按数量 | 按金额 |
+|---|---|
+| ![按数量下单](docs/screenshots/04-buy-by-volume.png) | ![按金额下单](docs/screenshots/05-buy-by-cash.png) |
+
+上图是一只可转债：1 万元按最新价 163.19 换算成 60 张，并明说「已按 10 张步进取整」。
+换成科创板会按 1 股递增（5 万元买中芯国际是 397 股，而不是整手规整后的 300 股），
+资金利用率差着一截。
+
 ---
 
 ## 它和「QMT 面板」通常的做法有什么不同
@@ -74,6 +92,18 @@ python app.py
 
 没有任何配置也能启动 —— Tushare、MySQL、大QMT 全部缺失时服务照常跑，只是对应模块降级（下单不可用、题材和市值字段留空）。
 
+数据库默认是仓库根目录下的 `dashboard.db`，用 `DASHBOARD_DB_PATH` 可以指到别处（挂载卷、独立数据盘，或者拿个副本跑而不碰生产库）。
+
+### 没有 QMT 也想先看看长什么样
+
+```bash
+python tools/seed_demo_data.py demo.db
+DASHBOARD_DB_PATH=demo.db python app.py
+```
+
+造一份合成账户：约 200 万规模的 7 只持仓（含 2 只可转债）、成交流水、挂着没成的委托、30 天资金曲线。
+上面那几张截图就是从它来的。
+
 ---
 
 ## 配置
@@ -119,7 +149,7 @@ python app.py
 |---|---|---|
 | JWT 密钥 | `SECRET_KEY` | 每次启动随机生成，重启后 JWT 失效。**生产必配。** |
 | Tushare | `TUSHARE_TOKEN` 或 `config/tushare.json` | 市值、涨跌幅回退源、K线分析留空 |
-| 股票基础库 | `STOCK_DB_*` 或 `config/mysql.json` | 下单搜索只走本地缓存 |
+| 股票基础库 | `STOCK_DB_*` 或 `config/mysql.json` | 下单搜索退回本地来源（转债名录 + 自己的持仓） |
 | 记录板同步 | `MYSQL_*` 或 `config/mysql_sync.json` | 研究记录板只存本地 SQLite |
 | 东财代理 | `config/proxy.json` | 直连东财；被封时转债比价表补不上转股价 |
 | 大模型 | 管理页「大模型配置」 | 记录板退回按分号拆分的规则解析 |
@@ -152,6 +182,10 @@ python app.py
 
 **强赎闸门**：已触发强赎的转债禁止新开仓（强赎公告后按 100 元附近赎回，带溢价买进去是确定性亏损）。判定不了就不拦。
 
+**按金额买转债**：转债一张一百多块，按数量下单不好估仓位。`POST /api/position/buy_new`
+传 `cash_amount` 即可，服务端用实时价换算成张数再按 10 张步进规整，返回的就是实际报单量。
+拿不到实时价时直接报错，不会用昨收或者猜的价格替你决定买多少。
+
 **打新债**：`cb/ipo.py`，交易日开盘后自动申购。**默认 dry-run**，要真申购得在账号配置里显式打开 `"ipo_subscribe": true` + `"ipo_live": true`，并且账号本身 `allow_order`。
 
 **转股价数据**：主源是 akshare `bond_zh_cov`，实测只覆盖约三成的券；缺的用比价表 `bond_cov_comparison` 补（这个接口在机房 IP 上常被东财掐，所以走 `config/proxy.json` 的隧道），再缺就问大QMT 的合约详情要。三层都拿不到时，溢价率相关字段返回 `null`，前端显示「—」并在 tooltip 里说明原因 —— 不会拿缺失的转股价凑一个看起来像模像样的数出来。`GET /api/cb` 的 `coverage` 字段能看到当前覆盖率。
@@ -167,7 +201,7 @@ python app.py
 | `POST /api/position/sell` | 按可用量百分比卖出。100% 走清仓，零股一并卖掉 |
 | `POST /api/position/sell_amount` | 按绝对数量卖出，自动按可用量封顶 |
 | `POST /api/position/buy` | 按现有持仓百分比加仓（含仓位系数） |
-| `POST /api/position/buy_new` | 按绝对数量新开仓，数量校验按品种走 |
+| `POST /api/position/buy_new` | 新开仓。给 `amount` 按数量，给 `cash_amount` 按金额（服务端用实时价换算） |
 | `POST /api/position/sell/cancel` / `buy/cancel` | 撤掉该股票所有可撤的卖单 / 买单 |
 | `POST /api/orders/cancel` | 撤单，给 `order_id` 撤一笔，给 `stock_code` 撤该票全部 |
 | `POST /api/account/clear-positions` | 一键清仓，逐笔报单并返回每笔结果，需清仓密码 |
@@ -182,7 +216,7 @@ python app.py
 | `GET /api/orders` | 活动委托（默认只看未成交/部成） |
 | `GET /api/order-audit` | 下单审计流水：谁、何时、下了什么、成没成、失败原因 |
 | `GET /api/accounts/health` | 各账号连接状态、RPC 往返延迟、最近一次同步结果 |
-| `GET /api/instrument/{code}` | 品种规则：单位、最小申报量、步进、价格精度、是否 T+0 |
+| `GET /api/instrument/{code}` | 品种规则 + 实时价。带 `?volume=` 估算金额，带 `?cash_amount=` 换算数量 |
 
 ### 可转债
 
@@ -220,7 +254,8 @@ cb/                 可转债
   service.py          参考数据 + 实时行情 + 指标
   ipo.py              打新债
 plugins/            可选外部数据源，缺配置自动降级
-tools/              开发用脚本（造数据、查库）
+tools/              seed_demo_data.py（造演示库）、查库脚本
+docs/screenshots/   README 用的截图
 ```
 
 ---

@@ -21,9 +21,10 @@ __pycache__/
 *.db-shm
 *.db-wal
 
-# 编辑器 / 截图
+# 编辑器 / 截图。docs/screenshots 是 README 用的，要提交。
 .vscode/
 .trae/
 *.png
 *.jpeg
 *.jpg
+!docs/screenshots/*.png
