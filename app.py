@@ -5995,6 +5995,107 @@ def _enrich_market_today_records(records):
         r["topic"] = e.get("topic", "")
 
 
+@app.get("/api/trade-flow")
+async def get_trade_flow(
+    account_id: str = Query("", description="账号ID，留空或 all 表示全部"),
+    days: int = Query(7, ge=1, le=90, description="往前几个自然日"),
+    side: str = Query("all", description="all / buy / sell"),
+    q: str = Query("", description="按代码或名称过滤"),
+    limit: int = Query(500, ge=1, le=2000),
+    current_user: dict = Depends(get_user_or_viewer)
+):
+    """买卖流水：账户真实成交，买卖同表。
+
+    取代原来的「历史买入列表」—— 那个面板展示的是 stock_market_data 的信号报出，
+    表里没有买卖方向，本质是选股信号不是成交。这里的数据来自 trades 表，
+    由 sync.poller 定时拉 + sync.callbacks 实时回报填充。
+
+    观察者可见（含数量与金额）。普通用户只看得到自己的账号。
+    """
+    is_viewer = bool(current_user.get("is_viewer"))
+    if not is_viewer and current_user.get("role") != "admin":
+        account_id = current_user["account_id"]
+
+    since = int((datetime.now() - timedelta(days=days)).timestamp())
+    conditions = ["traded_time >= ?"]
+    params = [since]
+    if account_id and account_id.lower() != "all":
+        conditions.append("account_id = ?")
+        params.append(account_id)
+    else:
+        conditions.append(
+            "account_id NOT IN (SELECT account_id FROM users WHERE is_dormant = 1)")
+    if side == "buy":
+        conditions.append("(direction = 23 OR order_type = 23)")
+    elif side == "sell":
+        conditions.append("(direction = 24 OR order_type = 24)")
+    keyword = (q or "").strip()
+    if keyword:
+        conditions.append("(stock_code LIKE ? OR instrument_name LIKE ?)")
+        params.extend(["%%%s%%" % keyword, "%%%s%%" % keyword])
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "SELECT account_id, stock_code, instrument_name, direction, order_type, "
+            "traded_price, traded_volume, traded_amount, traded_time, strategy_name, "
+            "order_remark, order_sysid FROM trades WHERE %s "
+            "ORDER BY traded_time DESC LIMIT ?" % " AND ".join(conditions),
+            params + [limit])
+        columns = ["account_id", "stock_code", "instrument_name", "direction", "order_type",
+                   "traded_price", "traded_volume", "traded_amount", "traded_time",
+                   "strategy_name", "order_remark", "order_sysid"]
+        rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        cursor.execute("SELECT account_id, COALESCE(alias, account_name, account_id) FROM users")
+        aliases = dict(cursor.fetchall())
+    finally:
+        conn.close()
+
+    buy_amount = sell_amount = 0.0
+    buy_count = sell_count = 0
+    records = []
+    for row in rows:
+        direction = _trade_side(row)
+        amount = _t0_safe_float(row.get("traded_amount"))
+        if direction == "buy":
+            buy_count += 1
+            buy_amount += amount
+        elif direction == "sell":
+            sell_count += 1
+            sell_amount += amount
+        traded_time = _t0_safe_int(row.get("traded_time"))
+        records.append({
+            "account_id": row["account_id"],
+            "account_alias": aliases.get(row["account_id"], row["account_id"]),
+            "stock_code": row["stock_code"],
+            "stock_name": row["instrument_name"] or "",
+            "side": direction,
+            "side_label": {"buy": "买入", "sell": "卖出"}.get(direction, "--"),
+            "price": _t0_safe_float(row.get("traded_price")),
+            "volume": _t0_safe_int(row.get("traded_volume")),
+            "amount": amount,
+            "unit": instruments.unit_name(row["stock_code"] or ""),
+            "is_bond": instruments.is_convertible_bond(row["stock_code"] or ""),
+            "strategy_name": row.get("strategy_name") or "",
+            "order_sysid": row.get("order_sysid") or "",
+            "traded_time": traded_time,
+            "traded_at": (datetime.fromtimestamp(traded_time).strftime("%Y-%m-%d %H:%M:%S")
+                          if traded_time > 0 else ""),
+        })
+
+    return {
+        "status": "success",
+        "records": records,
+        "summary": {
+            "buy_count": buy_count, "sell_count": sell_count,
+            "buy_amount": round(buy_amount, 2), "sell_amount": round(sell_amount, 2),
+            "net_amount": round(buy_amount - sell_amount, 2),
+            "days": days,
+        },
+    }
+
+
 @app.get("/api/market-data/today")
 async def get_market_data_today(current_user: dict = Depends(get_user_or_viewer)):
     """读取 stock_market_data 当日报出的股票，按报出时间(update_time)降序。

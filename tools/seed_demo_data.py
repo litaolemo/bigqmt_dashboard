@@ -36,10 +36,14 @@ POSITIONS = [
     ("111026.SH", "派克转债", 500, 151.200, 160.353),
 ]
 
+# 当日成交流水（买卖混合）。代码 / 名称 / 方向(23买 24卖) / 数量 / 成交价
 TRADES = [
     ("600000.SH", "浦发银行", 23, 10000, 8.95),
+    ("002716.SZ", "湖南白银", 24, 5000, 11.42),
     ("123281.SZ", "中仑转债", 23, 300, 154.200),
+    ("111026.SH", "派克转债", 24, 200, 158.900),
     ("688981.SH", "中芯国际", 24, 500, 89.10),
+    ("601118.SH", "海南橡胶", 23, 15000, 6.58),
     ("510300.SH", "沪深300ETF", 23, 20000, 4.070),
 ]
 
@@ -149,7 +153,7 @@ def seed(db_path):
             (ACCOUNT, round(price * volume * 0.0003, 2), side, name,
              "T%03d" % i, "S%03d" % i, side, code,
              round(price * volume, 2), "TD%03d" % i, price,
-             int((now - timedelta(minutes=30 * (len(TRADES) - i))).timestamp()), volume))
+             int((now - timedelta(minutes=37 * (len(TRADES) - i) + 5)).timestamp()), volume))
 
     # 用本连接建表：cb.reference.ensure_table() 会另开一个连接，而这里的事务
     # 还没提交，SQLite 会直接 database is locked。

@@ -515,11 +515,11 @@
             数据已更新: {{ lastUpdateTime }}
         </div>
 
-        <!-- ============ 观察者(viewer)专属页面：只有历史买入列表，只读 ============ -->
+        <!-- ============ 观察者(viewer)专属页面：只有买卖流水，只读 ============ -->
         <div v-if="isAuthenticated && isViewer" class="container" style="max-width: 1180px;">
             <div class="dashboard-header">
                 <div class="header-title">
-                    <h1 style="font-size: 22px; font-weight: 900; letter-spacing: 1px;">历史买入列表</h1>
+                    <h1 style="font-size: 22px; font-weight: 900; letter-spacing: 1px;">买卖流水</h1>
                     <span style="font-size: 12px; color: var(--text-secondary);">{{ marketDataTradeDate || '今日' }} 报出 {{ marketDataRecords.length }} 只 · 每5秒自动刷新</span>
                 </div>
                 <div class="header-controls" style="display: flex; align-items: center; gap: 12px;">
@@ -1249,70 +1249,80 @@
                           </div>
                     </div>
 
-                    <!-- 历史买入列表（stock_market_data 当日报出） -->
+                    <!-- 买卖流水：账户真实成交（买+卖） -->
                     <div class="card" style="margin-top: 20px;">
-                        <div style="padding: 20px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center;">
-                            <h3 style="font-size: 16px; font-weight: 800; letter-spacing: 1px;">历史买入列表
+                        <div style="padding: 20px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                            <h3 style="font-size: 16px; font-weight: 800; letter-spacing: 1px; margin: 0;">买卖流水
                                 <span style="font-size: 12px; font-weight: 400; color: var(--text-secondary); margin-left: 10px;">
-                                    {{ marketDataTradeDate || '今日' }} 报出 {{ marketDataRecords.length }} 只 · 列表每5秒刷新 · 实时涨幅每1分钟统一更新
+                                    近 {{ tradeFlowDays }} 天 · 买 {{ tradeFlowSummary.buy_count || 0 }} 笔 / 卖 {{ tradeFlowSummary.sell_count || 0 }} 笔
+                                    · 净买入 <span :class="(tradeFlowSummary.net_amount || 0) >= 0 ? 'profit' : 'loss'">{{ formatCash(tradeFlowSummary.net_amount) }}</span>
                                 </span>
                             </h3>
-                            <el-button size="small" @click="loadMarketDataToday(false)" :loading="marketDataLoading">刷新</el-button>
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <el-radio-group v-model="tradeFlowSide" size="small">
+                                    <el-radio-button label="all">全部</el-radio-button>
+                                    <el-radio-button label="buy">买入</el-radio-button>
+                                    <el-radio-button label="sell">卖出</el-radio-button>
+                                </el-radio-group>
+                                <el-select v-model="tradeFlowDays" size="small" style="width: 90px;">
+                                    <el-option :value="1" label="今日" />
+                                    <el-option :value="7" label="近7天" />
+                                    <el-option :value="30" label="近30天" />
+                                    <el-option :value="90" label="近90天" />
+                                </el-select>
+                                <el-input v-model="tradeFlowQuery" size="small" placeholder="代码/名称" clearable style="width: 130px;" />
+                                <el-button size="small" @click="loadTradeFlow(false)" :loading="tradeFlowLoading">刷新</el-button>
+                            </div>
                         </div>
                         <div style="padding: 0 10px;">
-                            <el-table :data="marketDataRecords" size="small" style="width: 100%;" max-height="56vh"
-                                      empty-text="今日暂无报出数据" v-loading="marketDataLoading">
-                                <el-table-column prop="stock_name" label="名称" width="92" fixed>
+                            <el-table :data="tradeFlowRecords" size="small" style="width: 100%;" max-height="56vh"
+                                      empty-text="所选区间内没有成交" v-loading="tradeFlowLoading">
+                                <el-table-column prop="traded_at" label="成交时间" width="150" sortable show-overflow-tooltip>
                                     <template #default="{ row }">
-                                        <span @click="goToStockDetail(row.ts_code || row.stock_code)" style="font-weight: bold; color: #fff; cursor: pointer;">{{ row.stock_name || '--' }}</span>
+                                        <span style="font-family: 'Share Tech Mono', monospace; color: var(--text-secondary);">{{ row.traded_at || '--' }}</span>
+                                    </template>
+                                </el-table-column>
+                                <el-table-column prop="side" label="方向" width="70" align="center" sortable>
+                                    <template #default="{ row }">
+                                        <span :class="row.side === 'buy' ? 'profit' : 'loss'" style="font-weight: 800;">{{ row.side_label }}</span>
+                                    </template>
+                                </el-table-column>
+                                <el-table-column prop="stock_name" label="名称" min-width="120" fixed>
+                                    <template #default="{ row }">
+                                        <span @click="goToStockDetail(row.stock_code)" style="font-weight: bold; color: #fff; cursor: pointer;">{{ row.stock_name || '--' }}</span>
+                                        <el-tag v-if="row.is_bond" size="small" type="warning" effect="plain" style="margin-left: 6px; height: 17px; line-height: 15px; padding: 0 4px;">转债</el-tag>
                                         <div style="font-size: 11px; color: var(--text-secondary); font-family: monospace;">{{ row.stock_code }}</div>
                                     </template>
                                 </el-table-column>
-                                <el-table-column prop="dynamic_change" label="实时涨幅" width="86" align="right" sortable>
+                                <el-table-column prop="price" label="成交价" width="96" align="right" sortable>
+                                    <template #default="{ row }">{{ row.price ? row.price.toFixed(row.is_bond ? 3 : 2) : '--' }}</template>
+                                </el-table-column>
+                                <el-table-column prop="volume" label="数量" width="100" align="right" sortable>
+                                    <template #default="{ row }">{{ row.volume }} <span style="color: var(--text-secondary); font-size: 11px;">{{ row.unit }}</span></template>
+                                </el-table-column>
+                                <el-table-column prop="amount" label="成交金额" width="120" align="right" sortable>
                                     <template #default="{ row }">
-                                        <span v-if="row.dynamic_change != null" :class="Number(row.dynamic_change) >= 0 ? 'profit' : 'loss'" style="font-weight: 800;">{{ formatPercent(row.dynamic_change) }}</span>
-                                        <span v-else style="color: var(--text-secondary);">--</span>
+                                        <span :class="row.side === 'buy' ? 'profit' : 'loss'" style="font-weight: 700;">{{ formatCash(row.amount) }}</span>
                                     </template>
                                 </el-table-column>
-                                <el-table-column prop="current_change" label="报出涨幅" width="82" align="right" sortable>
+                                <el-table-column prop="account_alias" label="账号" width="110" show-overflow-tooltip>
                                     <template #default="{ row }">
-                                        <span :class="Number(row.current_change) >= 0 ? 'profit' : 'loss'">{{ formatPercent(row.current_change) }}</span>
+                                        <span style="color: var(--text-secondary);">{{ row.account_alias }}</span>
                                     </template>
                                 </el-table-column>
-                                <el-table-column prop="latest_price" label="最新价" width="78" align="right" sortable>
-                                    <template #default="{ row }">{{ row.latest_price != null ? Number(row.latest_price).toFixed(2) : '--' }}</template>
-                                </el-table-column>
-                                <el-table-column prop="topic" label="题材" min-width="130" show-overflow-tooltip>
+                                <el-table-column prop="strategy_name" label="策略" min-width="100" show-overflow-tooltip>
                                     <template #default="{ row }">
-                                        <span style="color: var(--primary-color);">{{ row.topic || '--' }}</span>
+                                        <span style="color: var(--text-secondary);">{{ row.strategy_name || '--' }}</span>
                                     </template>
                                 </el-table-column>
-                                <el-table-column prop="market_value_yi" label="市值" width="84" align="right" sortable>
-                                    <template #default="{ row }">{{ formatYi(row.market_value_yi) }}</template>
-                                </el-table-column>
-                                <el-table-column prop="dde" label="DDE" width="78" align="right" sortable>
+                                <el-table-column prop="order_sysid" label="委托号" width="120" show-overflow-tooltip>
                                     <template #default="{ row }">
-                                        <span :class="Number(row.dde) >= 0 ? 'profit' : 'loss'">{{ row.dde != null ? Number(row.dde).toFixed(3) : '--' }}</span>
-                                    </template>
-                                </el-table-column>
-                                <el-table-column prop="report_count_7d" label="7日报出" width="76" align="center" sortable>
-                                    <template #default="{ row }">
-                                        <span :style="{ color: Number(row.report_count_7d) > 1 ? 'var(--primary-color)' : 'var(--text-secondary)', fontWeight: Number(row.report_count_7d) > 1 ? 800 : 400 }">{{ row.report_count_7d }} 次</span>
-                                    </template>
-                                </el-table-column>
-                                <el-table-column prop="update_time" label="报出时间" width="150" sortable show-overflow-tooltip></el-table-column>
-                                <el-table-column label="操作" width="100" align="center" fixed="right">
-                                    <template #default="{ row }">
-                                        <el-button type="danger" size="small" link @click="openMarketBuyDialog(row)" style="font-size: 17px; font-weight: bold;" title="买入下发">
-                                            <el-icon><Plus /></el-icon>
-                                        </el-button>
-                                        <el-button type="success" size="small" link @click="analyzeMarketDataKline(row)">K线</el-button>
+                                        <span style="font-family: monospace; color: var(--text-secondary); font-size: 11px;">{{ row.order_sysid || '--' }}</span>
                                     </template>
                                 </el-table-column>
                             </el-table>
                         </div>
                     </div>
-                </el-col>
 
                 <!-- 右侧：交易和统计 -->
                 <el-col :xs="24" :md="8">
@@ -1929,7 +1939,7 @@
                 </el-form>
                 <el-form v-else @submit.prevent="viewerLogin" label-position="top">
                     <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 14px; line-height: 1.6;">
-                        注册即可查看每日「历史买入列表」，与交易账号相互独立。首次使用请先「注册」，之后用同一用户名密码「登录」。
+                        注册即可查看每日「买卖流水」，与交易账号相互独立。首次使用请先「注册」，之后用同一用户名密码「登录」。
                     </div>
                     <el-form-item label="用户名">
                         <el-input v-model="viewerForm.username" placeholder="设置 / 输入用户名" />

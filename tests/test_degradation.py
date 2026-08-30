@@ -86,12 +86,17 @@ class MissingBridgeTests(unittest.TestCase):
         self.client = TestClient(app_module.app)
         self._account_ids = app_module.bridge_config.account_ids
         self._list_accounts = app_module.bridge_config.list_accounts
+        # quote_account_id 也要停掉：行情主连接是独立解析的，只停 account_ids
+        # 的话 /api/instrument 仍会去连真实 QMT，测试就不再是「没有连接」了
+        self._quote_account = app_module.bridge_config.quote_account_id
         app_module.bridge_config.account_ids = lambda enabled_only=True: []
         app_module.bridge_config.list_accounts = lambda enabled_only=True: []
+        app_module.bridge_config.quote_account_id = lambda: ""
 
     def tearDown(self):
         app_module.bridge_config.account_ids = self._account_ids
         app_module.bridge_config.list_accounts = self._list_accounts
+        app_module.bridge_config.quote_account_id = self._quote_account
         self.client.close()
         app_module.app.dependency_overrides.clear()
 

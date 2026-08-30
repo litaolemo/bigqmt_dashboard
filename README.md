@@ -13,6 +13,11 @@ tooltip 里说明原因，不会拿缺失的转股价凑一个看起来像模像
 
 ![可转债列](docs/screenshots/02-positions-cb.png)
 
+买卖流水把账户真实成交摊在一张表里——买卖同表、方向红绿、转债自动按 3 位小数和「张」显示，
+可按方向和时间区间筛：
+
+![买卖流水](docs/screenshots/06-trade-flow.png)
+
 手动下单支持**按数量**和**按金额**两种方式，都实时显示预计下单金额。金额↔数量的换算在服务端完成，
 因为只有服务端同时握着实时价和品种规整规则 —— 前端自己算会和实际报单量对不上：
 
@@ -101,7 +106,7 @@ python tools/seed_demo_data.py demo.db
 DASHBOARD_DB_PATH=demo.db python app.py
 ```
 
-造一份合成账户：约 200 万规模的 7 只持仓（含 2 只可转债）、成交流水、挂着没成的委托、30 天资金曲线。
+造一份合成账户：约 200 万规模的 7 只持仓（含 2 只可转债）、7 笔买卖成交、挂着没成的委托、30 天资金曲线。
 上面那几张截图就是从它来的。
 
 ---
@@ -214,6 +219,7 @@ DASHBOARD_DB_PATH=demo.db python app.py
 | 接口 | 说明 |
 |---|---|
 | `GET /api/orders` | 活动委托（默认只看未成交/部成） |
+| `GET /api/trade-flow` | 买卖流水：账户真实成交，买卖同表。支持 `side` / `days` / `q` 筛选，观察者可见 |
 | `GET /api/order-audit` | 下单审计流水：谁、何时、下了什么、成没成、失败原因 |
 | `GET /api/accounts/health` | 各账号连接状态、RPC 往返延迟、最近一次同步结果 |
 | `GET /api/instrument/{code}` | 品种规则 + 实时价。带 `?volume=` 估算金额，带 `?cash_amount=` 换算数量 |

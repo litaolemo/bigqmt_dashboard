@@ -51,9 +51,15 @@ def get_ticks(codes, timeout_seconds=None):
         return {}
 
 
-def last_price(code):
-    """单只最新价；取不到返回 None。"""
-    tick = get_ticks([code]).get(instruments.normalize_code(code)) or {}
+# 给 UI 用的取价超时。下单弹窗要的是「大概多少钱」，等十几秒还不如直接显示「—」；
+# 真正下单走的是另一条路径，用账号自己的 timeout_seconds。
+UI_QUOTE_TIMEOUT_SECONDS = 3.0
+
+
+def last_price(code, timeout_seconds=UI_QUOTE_TIMEOUT_SECONDS):
+    """单只最新价；取不到返回 None。默认短超时，不让界面卡住。"""
+    tick = get_ticks([code], timeout_seconds=timeout_seconds).get(
+        instruments.normalize_code(code)) or {}
     value = tick.get("lastPrice") or tick.get("last_price")
     try:
         value = float(value)

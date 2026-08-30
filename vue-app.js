@@ -161,7 +161,15 @@ const app = createApp({
         let researchBoardPollTimer = null;
         let researchBoardAutoTimer = null;
 
-        // 历史买入列表（stock_market_data 当日报出）
+        // 买卖流水（账户真实成交）
+        const tradeFlowRecords = ref([]);
+        const tradeFlowSummary = ref({});
+        const tradeFlowLoading = ref(false);
+        const tradeFlowSide = ref('all');
+        const tradeFlowDays = ref(7);
+        const tradeFlowQuery = ref('');
+
+        // 选股信号列表（stock_market_data 当日报出）
         const marketDataRecords = ref([]);
         const marketDataLoading = ref(false);
         const marketDataTradeDate = ref('');
@@ -2770,7 +2778,37 @@ const app = createApp({
             return spec.min + Math.floor((raw - spec.min) / spec.step) * spec.step;
         };
 
-        // ===== 历史买入列表（stock_market_data 当日报出）=====
+        // ===== 买卖流水（账户真实成交，买+卖）=====
+        // 取代原来的「历史买入列表」—— 那个展示的是 stock_market_data 的选股信号，
+        // 表里没有买卖方向。这里的数据来自 trades 表，由轮询和实时回报填充。
+        const loadTradeFlow = async (silent = false) => {
+            if (!isAuthenticated.value && !isViewer.value) return;
+            if (!silent) tradeFlowLoading.value = true;
+            try {
+                const params = new URLSearchParams({
+                    account_id: currentAccountId.value || 'all',
+                    days: String(tradeFlowDays.value),
+                    side: tradeFlowSide.value,
+                    q: tradeFlowQuery.value || ''
+                });
+                const response = await fetch(`/api/trade-flow?${params}`, {
+                    headers: { 'Authorization': `Bearer ${accessToken.value}` }
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    tradeFlowRecords.value = data.records || [];
+                    tradeFlowSummary.value = data.summary || {};
+                }
+            } catch (e) {
+                console.error('加载买卖流水失败:', e);
+            } finally {
+                if (!silent) tradeFlowLoading.value = false;
+            }
+        };
+
+        watch([tradeFlowSide, tradeFlowDays, tradeFlowQuery, currentAccountId], () => loadTradeFlow(true));
+
+        // ===== 选股信号列表（stock_market_data 当日报出，仍供买入下发弹窗使用）=====
         // 加载当日报出数据（silent=true 时不闪 loading，用于定时静默刷新）
         const loadMarketDataToday = async (silent = false) => {
             if (!isAuthenticated.value) return;
@@ -3968,7 +4006,8 @@ const app = createApp({
                 }
             }, 60000);
 
-            // 历史买入列表：登录后每5秒静默拉取当日报出（账户用户与观察者都需要；观察者据此触发新报出通知）
+            loadTradeFlow(true);
+            // 选股信号：登录后每5秒静默拉取当日报出（观察者据此触发新报出通知）
             if (marketDataTimer) clearInterval(marketDataTimer);
             marketDataTimer = setInterval(() => {
                 if (isAuthenticated.value && (isViewer.value || isTradingHoursNow())) {
@@ -3980,7 +4019,7 @@ const app = createApp({
         // 页面切回前台时立即刷新一次
         const onVisibilityChange = () => {
             if (document.hidden || !isAuthenticated.value) return;
-            if (isViewer.value) { loadMarketDataToday(true); return; }   // 观察者只刷新历史买入列表
+            if (isViewer.value) { loadTradeFlow(true); return; }   // 观察者只看买卖流水
             if (currentAccountId.value) {
                 loadData();
                 loadChartData();
@@ -4235,7 +4274,14 @@ const app = createApp({
             saveResearchBoardEdit,
             deleteResearchBoardRecord,
             analyzeResearchBoardKline,
-            // 历史买入列表
+            tradeFlowRecords,
+            tradeFlowSummary,
+            tradeFlowLoading,
+            tradeFlowSide,
+            tradeFlowDays,
+            tradeFlowQuery,
+            loadTradeFlow,
+            // 选股信号列表
             marketDataRecords,
             marketDataLoading,
             marketDataTradeDate,
