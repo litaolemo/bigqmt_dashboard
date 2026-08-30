@@ -85,6 +85,45 @@ class RedeemProgressTests(unittest.TestCase):
         self.assertEqual(status["hits"], 1)
 
 
+class RedeemKnownFlagTests(unittest.TestCase):
+    """「没数据」和「0 次命中」必须能区分开。
+
+    实测发现的问题：QMT 本地没下载过正股历史时日线返回空，强赎进度是 0/15，
+    前端显示成 0/15 会被读成「离触发很远，安全」，但真相是「不知道」。
+    """
+
+    def test_no_data_is_not_the_same_as_zero_hits(self):
+        no_data = metrics.redeem_progress([], 10.0)
+        zero_hits = metrics.redeem_progress([5.0] * 30, 10.0)
+
+        self.assertFalse(no_data["known"])
+        self.assertIn("无正股日线", no_data["reason"])
+
+        self.assertTrue(zero_hits["known"])
+        self.assertEqual(zero_hits["reason"], "")
+
+        # 两者的 hits 都是 0，所以光看 hits 分不出来——known 才是判据
+        self.assertEqual(no_data["hits"], zero_hits["hits"])
+
+    def test_missing_conversion_price_is_also_unknown(self):
+        result = metrics.redeem_progress([20.0] * 30, None)
+        self.assertFalse(result["known"])
+        self.assertIn("转股价", result["reason"])
+
+    def test_short_history_is_known_but_flagged(self):
+        result = metrics.redeem_progress([20.0] * 3, 10.0)
+        self.assertTrue(result["known"])
+        self.assertEqual(result["hits"], 3)
+        self.assertFalse(result["triggered"])
+        self.assertIn("不足", result["reason"])
+
+    def test_full_window_has_no_caveat(self):
+        result = metrics.redeem_progress([20.0] * 30, 10.0)
+        self.assertTrue(result["known"])
+        self.assertTrue(result["triggered"])
+        self.assertEqual(result["reason"], "")
+
+
 class EvaluateTests(unittest.TestCase):
     def test_evaluate_returns_every_field_even_when_inputs_are_missing(self):
         result = metrics.evaluate(bond_price=None, stock_price=None,

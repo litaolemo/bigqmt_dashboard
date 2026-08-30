@@ -60,8 +60,12 @@ def redeem_progress(stock_closes, conversion_price, ratio=DEFAULT_REDEEM_RATIO,
     """强赎进度。
 
     stock_closes 按时间升序传入正股收盘价；只看最后 window 个交易日。
-    返回 {trigger_price, hits, hits_needed, window, days_counted, triggered, ratio_done}。
-    数据不足时 triggered 一定是 False —— 宁可漏报也不能凭不完整的数据吓人。
+    返回 {trigger_price, hits, hits_needed, window, days_counted, triggered,
+    ratio_done, known}。
+
+    triggered 在数据不足时一定是 False —— 宁可漏报也不能凭不完整的数据吓人。
+    但「没数据」和「0 次命中」是两回事：前者是不知道，后者是确定安全。
+    known=False 表示压根没算成，调用方必须显示成「—」而不是 0/15。
     """
     trigger = redeem_trigger_price(conversion_price, ratio)
     result = {
@@ -72,8 +76,11 @@ def redeem_progress(stock_closes, conversion_price, ratio=DEFAULT_REDEEM_RATIO,
         "days_counted": 0,
         "triggered": False,
         "ratio_done": 0.0,
+        "known": False,
+        "reason": "",
     }
     if trigger is None:
+        result["reason"] = "缺转股价"
         return result
 
     closes = []
@@ -87,12 +94,17 @@ def redeem_progress(stock_closes, conversion_price, ratio=DEFAULT_REDEEM_RATIO,
     recent = closes[-window:]
     result["days_counted"] = len(recent)
     if not recent:
+        result["reason"] = "无正股日线数据"
         return result
 
     hits = sum(1 for price in recent if price >= trigger)
     result["hits"] = hits
     result["ratio_done"] = round(hits / hits_needed, 4) if hits_needed else 0.0
     result["triggered"] = hits >= hits_needed
+    # 日线不足一个完整窗口时，命中数是真的，但「未触发」这个结论还不牢靠。
+    result["known"] = True
+    if len(recent) < window:
+        result["reason"] = "日线仅 %d 根，不足 %d 个交易日的观察窗口" % (len(recent), window)
     return result
 
 

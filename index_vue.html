@@ -959,6 +959,10 @@
                                                 <el-tag v-if="row.bond.redeem.triggered" type="danger" size="small" effect="dark">
                                                     已触发
                                                 </el-tag>
+                                                <el-tooltip v-else-if="!row.bond.redeem.known"
+                                                            :content="row.bond.redeem.reason || '强赎进度不可用'">
+                                                    <span style="color: var(--text-secondary);">—</span>
+                                                </el-tooltip>
                                                 <el-tooltip v-else
                                                             :content="`最近 ${row.bond.redeem.days_counted} 个交易日中 ${row.bond.redeem.hits} 日收盘 ≥ ${row.bond.redeem.trigger_price}，满 ${row.bond.redeem.hits_needed} 日触发强赎`">
                                                     <span :class="row.bond.redeem.hits >= 10 ? 'text-red' : ''">

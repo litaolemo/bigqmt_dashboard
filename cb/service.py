@@ -129,6 +129,10 @@ def bond_view(bond_code, bond_price=None):
         if view["premium_rate"] is not None:
             view["double_low"] = metrics.double_low(bond_price, view["premium_rate"])
     view["redeem"] = redeem_status(code, conversion_price, stock_code)
+    if not view["redeem"].get("known"):
+        # 强赎算不出来要说出来。QMT 本地没下载过正股历史时就是这种情况。
+        view["data_gap"] = "强赎进度不可用：%s" % (
+            view["redeem"].get("reason") or "正股历史数据缺失")
     return view
 
 
