@@ -169,15 +169,8 @@ const app = createApp({
         const tradeFlowDays = ref(7);
         const tradeFlowQuery = ref('');
 
-        // 选股信号列表（stock_market_data 当日报出）
-        const marketDataRecords = ref([]);
-        const marketDataLoading = ref(false);
-        const marketDataTradeDate = ref('');
-        let marketDataTimer = null;
-        // 历史买入列表 - 买入下发对话框
-        const showMarketBuyDialog = ref(false);
-        const marketBuyStock = ref(null);
-        const marketBuyAmount = ref(100);
+        let tradeFlowTimer = null;
+
 
         // 记录板 K 线 AI 分析
         const showKlineAnalysisDialog = ref(false);
@@ -1084,7 +1077,7 @@ const app = createApp({
             marketNotifySeen.clear();
             marketNotifyInitialized = false;      // 登录后首帧只做基线
             viewerNotifyOn.value = ('Notification' in window) && Notification.permission === 'granted' && localStorage.getItem('viewer_notify') === '1';
-            loadMarketDataToday(false);
+            loadTradeFlow(false);
             startViewerHeartbeat();
         };
 
@@ -1162,20 +1155,24 @@ const app = createApp({
         };
 
         // 检测新报出并弹通知（首帧只建立基线，不弹）
-        const maybeNotifyNewMarketData = (records) => {
+        // 新成交提醒。改造前提醒的是「选股信号新报出」，那张表已经整个去掉了；
+        // 现在提醒的是账户真的成交了一笔 —— 对盯盘的人来说这才是要立刻知道的事。
+        const maybeNotifyNewTrades = (records) => {
             const list = records || [];
+            const keyOf = r => `${r.order_sysid || r.stock_code}|${r.traded_time}`;
             if (!marketNotifyInitialized) {
-                list.forEach(r => marketNotifySeen.add(`${r.stock_code}|${r.update_time}`));
+                list.forEach(r => marketNotifySeen.add(keyOf(r)));
                 marketNotifyInitialized = true;
                 return;
             }
-            const fresh = list.filter(r => !marketNotifySeen.has(`${r.stock_code}|${r.update_time}`));
-            fresh.forEach(r => marketNotifySeen.add(`${r.stock_code}|${r.update_time}`));
+            const fresh = list.filter(r => !marketNotifySeen.has(keyOf(r)));
+            fresh.forEach(r => marketNotifySeen.add(keyOf(r)));
             if (fresh.length && viewerNotifyOn.value && ('Notification' in window) && Notification.permission === 'granted') {
-                const names = fresh.slice(0, 5).map(r => r.stock_name || r.stock_code).join('、');
-                const body = fresh.length > 5 ? `${names} 等 ${fresh.length} 只` : names;
+                const lines = fresh.slice(0, 5).map(
+                    r => `${r.side_label} ${r.stock_name || r.stock_code} ${r.volume}${r.unit}`);
+                const body = fresh.length > 5 ? `${lines.join('、')} 等 ${fresh.length} 笔` : lines.join('、');
                 try {
-                    const n = new Notification(`新报出 ${fresh.length} 只`, { body, tag: 'market-new', renotify: true });
+                    const n = new Notification(`新成交 ${fresh.length} 笔`, { body, tag: 'trade-new', renotify: true });
                     n.onclick = () => { window.focus(); n.close(); };
                 } catch (e) {}
             }
@@ -1380,7 +1377,7 @@ const app = createApp({
                 // 避免每次切账号都重下载几 MB 行情包导致卡顿
                 const marketLoaded = marketMinData.value && Object.keys(marketMinData.value).length > 0;
                 const boardLoaded = researchBoardRecords.value && researchBoardRecords.value.length > 0;
-                const marketDataTodayLoaded = marketDataRecords.value && marketDataRecords.value.length > 0;
+                const tradeFlowLoaded = tradeFlowRecords.value && tradeFlowRecords.value.length > 0;
                 const tasks = [
                     loadData({ loadAux: false, loadMarket: !marketLoaded }),
                     loadChartData(),
@@ -1389,7 +1386,7 @@ const app = createApp({
                     loadTradeFactors()
                 ];
                 if (!boardLoaded) tasks.push(loadResearchBoard(false));
-                if (!marketDataTodayLoaded) tasks.push(Promise.resolve(loadMarketDataToday(true)).catch(() => {}));
+                if (!tradeFlowLoaded) tasks.push(Promise.resolve(loadTradeFlow(true)).catch(() => {}));
                 await Promise.all(tasks);
             } finally {
                 loading.value = false;
@@ -2796,7 +2793,9 @@ const app = createApp({
                 });
                 if (response.ok) {
                     const data = await response.json();
-                    tradeFlowRecords.value = data.records || [];
+                    const records = data.records || [];
+                    maybeNotifyNewTrades(records);   // 有新成交时弹浏览器通知
+                    tradeFlowRecords.value = records;
                     tradeFlowSummary.value = data.summary || {};
                 }
             } catch (e) {
@@ -2807,127 +2806,6 @@ const app = createApp({
         };
 
         watch([tradeFlowSide, tradeFlowDays, tradeFlowQuery, currentAccountId], () => loadTradeFlow(true));
-
-        // ===== 选股信号列表（stock_market_data 当日报出，仍供买入下发弹窗使用）=====
-        // 加载当日报出数据（silent=true 时不闪 loading，用于定时静默刷新）
-        const loadMarketDataToday = async (silent = false) => {
-            if (!isAuthenticated.value) return;
-            if (!silent) marketDataLoading.value = true;
-            try {
-                const response = await fetch('/api/market-data/today', {
-                    headers: { 'Authorization': `Bearer ${accessToken.value}` }
-                });
-                if (response.ok) {
-                    const data = await response.json();
-                    const records = data.records || [];
-                    maybeNotifyNewMarketData(records);   // 检测新报出，必要时弹浏览器通知
-                    marketDataRecords.value = records;
-                    marketDataTradeDate.value = data.trade_date || '';
-                }
-            } catch (e) {
-                console.error('加载历史买入列表失败:', e);
-            } finally {
-                if (!silent) marketDataLoading.value = false;
-            }
-        };
-
-        // 打开买入下发对话框
-        const openMarketBuyDialog = (row) => {
-            if (!isAuthenticated.value) return;
-            marketBuyStock.value = row;
-            marketBuyAmount.value = 100;
-            showMarketBuyDialog.value = true;
-        };
-
-        // 确认买入下发（复用 /api/position/buy_new，force 为强制买入）
-        const confirmMarketBuy = async (force = false) => {
-            const row = marketBuyStock.value;
-            if (!row) return;
-            if (!marketBuyAmount.value || marketBuyAmount.value <= 0 || marketBuyAmount.value % 100 !== 0) {
-                ElementPlus.ElMessage.warning('买入股数必须是100的正整数倍');
-                return;
-            }
-            try {
-                const payload = {
-                    account_id: currentAccountId.value,
-                    stock_code: row.ts_code || row.stock_code,
-                    stock_name: row.stock_name || '',
-                    amount: marketBuyAmount.value
-                };
-                if (force === true) payload.force = true;
-                const response = await fetch('/api/position/buy_new', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${accessToken.value}`
-                    },
-                    body: JSON.stringify(payload)
-                });
-                if (response.ok) {
-                    const result = await response.json();
-                    ElementPlus.ElMessage.success(result.message);
-                    showMarketBuyDialog.value = false;
-                } else {
-                    const error = await response.json().catch(() => ({}));
-                    ElementPlus.ElMessage.error(error.detail || '设置失败');
-                }
-            } catch (e) {
-                console.error('历史买入下发失败', e);
-                ElementPlus.ElMessage.error('请求出错');
-            }
-        };
-
-        // AI 分析 K 线（复用记录板的 K 线分析对话框）
-        const analyzeMarketDataKline = async (row) => {
-            if (!row || !(row.ts_code || row.stock_code)) {
-                ElementPlus.ElMessage.warning('该记录缺少股票代码，无法分析');
-                return;
-            }
-            klineAnalysisData.value = {
-                stock_name: row.stock_name || '',
-                stock_code: row.ts_code || row.stock_code || '',
-                source: '', analysis: '', stats: null, bars: []
-            };
-            showKlineAnalysisDialog.value = true;
-            klineAnalysisLoading.value = true;
-            try {
-                const response = await fetch('/api/market-data/kline-analysis', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${accessToken.value}`
-                    },
-                    body: JSON.stringify({
-                        stock_code: row.ts_code || row.stock_code,
-                        stock_name: row.stock_name || '',
-                        topic: row.topic || ''
-                    })
-                });
-                const data = await response.json().catch(() => ({}));
-                if (!response.ok) {
-                    ElementPlus.ElMessage.error(data.detail || 'K线分析失败');
-                    klineAnalysisData.value.analysis = data.detail || '请求失败';
-                    return;
-                }
-                klineAnalysisData.value = {
-                    stock_name: data.stock_name || row.stock_name || '',
-                    stock_code: data.stock_code || row.ts_code || row.stock_code || '',
-                    source: data.source || '',
-                    analysis: data.analysis || '',
-                    stats: data.stats || null,
-                    bars: Array.isArray(data.bars) ? data.bars : []
-                };
-                if (data.source === 'llm') {
-                    ElementPlus.ElMessage.success('K线分析已生成');
-                } else if (data.source === 'fallback') {
-                    ElementPlus.ElMessage.info('未配置大模型或调用失败，已使用规则摘要');
-                }
-            } catch (e) {
-                ElementPlus.ElMessage.error('K线分析请求失败');
-            } finally {
-                klineAnalysisLoading.value = false;
-            }
-        };
 
         // 取消卖出
         const cancelSellPosition = async (row) => {
@@ -4006,12 +3884,11 @@ const app = createApp({
                 }
             }, 60000);
 
-            loadTradeFlow(true);
-            // 选股信号：登录后每5秒静默拉取当日报出（观察者据此触发新报出通知）
-            if (marketDataTimer) clearInterval(marketDataTimer);
-            marketDataTimer = setInterval(() => {
+            // 买卖流水：登录后每5秒静默拉取（观察者据此触发新成交通知）
+            if (tradeFlowTimer) clearInterval(tradeFlowTimer);
+            tradeFlowTimer = setInterval(() => {
                 if (isAuthenticated.value && (isViewer.value || isTradingHoursNow())) {
-                    loadMarketDataToday(true);
+                    loadTradeFlow(true);
                 }
             }, 5000);
         };
@@ -4025,7 +3902,7 @@ const app = createApp({
                 loadChartData();
             }
             loadResearchBoard(false);
-            if (isTradingHoursNow()) loadMarketDataToday(true);
+            if (isTradingHoursNow()) loadTradeFlow(true);
         };
 
         // 生命周期
@@ -4045,7 +3922,7 @@ const app = createApp({
             if (refreshTimer) clearInterval(refreshTimer);
             if (researchBoardPollTimer) clearInterval(researchBoardPollTimer);
             if (researchBoardAutoTimer) clearInterval(researchBoardAutoTimer);
-            if (marketDataTimer) clearInterval(marketDataTimer);
+            if (tradeFlowTimer) clearInterval(tradeFlowTimer);
             if (sparklineRenderTimer) clearTimeout(sparklineRenderTimer);
             document.removeEventListener('visibilitychange', onVisibilityChange);
         });
@@ -4281,17 +4158,7 @@ const app = createApp({
             tradeFlowDays,
             tradeFlowQuery,
             loadTradeFlow,
-            // 选股信号列表
-            marketDataRecords,
-            marketDataLoading,
-            marketDataTradeDate,
-            loadMarketDataToday,
-            showMarketBuyDialog,
-            marketBuyStock,
-            marketBuyAmount,
-            openMarketBuyDialog,
-            confirmMarketBuy,
-            analyzeMarketDataKline,
+
             repairResearchBoard,
             openResearchBoardInputsDialog,
             loadResearchBoardInputs,

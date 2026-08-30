@@ -3176,66 +3176,13 @@ def fetch_realtime_change_map(codes):
     return result
 
 
-# 统一实时涨跌幅缓存：由 realtime_change_update_task 每 1 分钟批量(tushare rt_k)刷新，
-# 供「历史买入列表」等 qmt 不更新涨跌幅的场景读取，避免每个面板各自频繁请求 tushare。
-# data: {ts_code: 当日涨跌幅%}；ts: 最近一次成功刷新的 epoch 秒。
-_RT_CHANGE_CACHE = {"ts": 0.0, "attempt_ts": 0.0, "data": {}}
-_RT_CHANGE_CACHE_MAX_AGE_SECONDS = 75
-_RT_CHANGE_REQUEST_REFRESH_THROTTLE_SECONDS = 30
-
-
-def ensure_realtime_change_cache(codes):
-    """接口层兜底刷新实时涨跌幅，避免后台线程或缓存未命中时前端一直显示空值。"""
-    wanted = {c for c in (codes or []) if c}
-    if not wanted:
-        return
-
-    now_ts = time.time()
-    data = _RT_CHANGE_CACHE.setdefault("data", {})
-    cache_ts = float(_RT_CHANGE_CACHE.get("ts") or 0.0)
-    missing_codes = {c for c in wanted if c not in data}
-    is_stale = cache_ts <= 0 or now_ts - cache_ts > _RT_CHANGE_CACHE_MAX_AGE_SECONDS
-    refresh_codes = wanted if is_stale else missing_codes
-    if not refresh_codes:
-        return
-
-    attempt_ts = float(_RT_CHANGE_CACHE.get("attempt_ts") or 0.0)
-    if now_ts - attempt_ts < _RT_CHANGE_REQUEST_REFRESH_THROTTLE_SECONDS:
-        return
-    _RT_CHANGE_CACHE["attempt_ts"] = now_ts
-
-    try:
-        changes = fetch_realtime_change_map(refresh_codes)
-        if changes:
-            data.update(changes)
-            _RT_CHANGE_CACHE["ts"] = now_ts
-    except Exception as e:
-        print(f"[实时涨幅] 接口兜底刷新失败: {e}")
-
-
-def get_market_today_codes_for_rt():
-    """取当日 stock_market_data 报出股票的 ts_code 列表（供统一实时涨幅刷新）。失败返回空。"""
-    try:
-        today = datetime.now().strftime("%Y%m%d")
-        conn = get_stock_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT DISTINCT stock_code FROM stock_market_data WHERE date_string = %s", (today,))
-        rows = cursor.fetchall()
-        conn.close()
-        return [_code_to_ts_code(r[0]) for r in rows if r and r[0]]
-    except Exception as e:
-        print(f"[实时涨幅] 取当日报出代码失败: {e}")
-        return []
-
-
 def realtime_change_update_task():
-    """交易日 09:15-15:00、且有用户在线使用看板时，每 10 秒统一刷新「记录板 + 历史买入列表」实时涨跌幅。
-    数据源：东方财富(主) → 新浪(被封时备用) → pro.daily(回退)，均走 KDL 代理。
-    缓存全部所需行情到 _RT_CHANGE_CACHE 供各面板共享读取；盘后 15:00 以后、或无人登录时不更新。
-    本地 sqlite 每 10 秒写回；MySQL 同步与「当日报出代码」查询节流到 60 秒，避免过频。"""
+    """交易日 09:15-15:00、且有用户在线使用看板时，每 10 秒刷新研究记录板的实时涨跌幅。
+
+    数据源：大QMT(主) → 新浪 → 东财 → pro.daily(回退)。盘后 15:00 以后、
+    或无人登录时不更新。本地 sqlite 每 10 秒写回，MySQL 同步节流到 60 秒。
+    """
     last_mysql_sync = 0.0
-    last_market_fetch = 0.0
-    market_codes = []
     while True:
         try:
             now = datetime.now()
@@ -3258,16 +3205,9 @@ def realtime_change_update_task():
                            "WHERE stock_code IS NOT NULL AND stock_code != ''")
             board_set = {row[0] for row in cursor.fetchall() if row[0]}
             conn.close()
-            # 历史买入列表「当日报出代码」变化慢，节流 60 秒查询一次
-            if nowt - last_market_fetch > 60 or not market_codes:
-                market_codes = get_market_today_codes_for_rt()
-                last_market_fetch = nowt
-            all_codes = board_set | set(market_codes)
-            if all_codes:
-                changes = fetch_realtime_change_map(all_codes)
+            if board_set:
+                changes = fetch_realtime_change_map(board_set)
                 if changes:
-                    _RT_CHANGE_CACHE["data"].update(changes)   # 共享缓存：所有面板读这里
-                    _RT_CHANGE_CACHE["ts"] = nowt
                     board_changes = {c: p for c, p in changes.items() if c in board_set}
                     if board_changes:
                         conn2 = get_db_connection()
@@ -5935,66 +5875,6 @@ async def set_buy_new_position_command(
     return order_response(results[0])
 
 
-# ============================================================================
-#                      历史买入列表（stock_market_data）
-# ============================================================================
-def _code_to_ts_code(code: str) -> str:
-    """6 位股票代码补全交易所后缀，转成 tushare ts_code 格式（如 000681 -> 000681.SZ）。
-    已带后缀的原样返回。6/9 开头 -> SH，0/3 -> SZ，4/8 -> BJ（北交所）。"""
-    code = str(code or "").strip()
-    if not code or "." in code:
-        return code
-    head = code[0]
-    if head in ("6", "9"):
-        return f"{code}.SH"
-    if head in ("4", "8"):
-        return f"{code}.BJ"
-    return f"{code}.SZ"
-
-
-# 题材/市值 富集缓存：5 分钟内复用，避免 5 秒轮询频繁打 tushare/MySQL
-_MARKET_TODAY_ENRICH = {"date": "", "ts": 0.0, "data": {}}
-
-
-def _enrich_market_today_records(records):
-    """尽力富集 题材 + 当前总市值(亿)，按交易日缓存 5 分钟。失败不影响主数据。
-    records 为 list[dict]，原地写入 topic / market_value_yi 字段。"""
-    today = datetime.now().strftime("%Y%m%d")
-    now_ts = time.time()
-    cache = _MARKET_TODAY_ENRICH
-    codes = {r["ts_code"] for r in records if r.get("ts_code")}
-    # 日期变更 / 超过 5 分钟 / 出现缓存里没有的新代码 -> 重新富集
-    stale = (cache["date"] != today
-             or now_ts - cache["ts"] > 300
-             or any(c not in cache["data"] for c in codes))
-    if stale:
-        try:
-            metrics = fetch_metrics_batch(codes)
-        except Exception as e:
-            print(f"[历史买入] 富集市值失败: {e}")
-            metrics = {}
-        try:
-            resolved = [{"code": r["ts_code"], "name": r.get("stock_name", "")} for r in records]
-            topics = fetch_limit_up_topics_batch(resolved)
-        except Exception as e:
-            print(f"[历史买入] 富集题材失败: {e}")
-            topics = {}
-        data = {}
-        for r in records:
-            c = r["ts_code"]
-            mv, _pct = (metrics.get(c) or (None, None))
-            tp = topics.get(c) or topics.get(r.get("stock_name")) or {}
-            data[c] = {
-                "market_value_yi": mv,
-                "topic": tp.get("topic") or tp.get("limit_up_reason") or tp.get("concept") or "",
-            }
-        cache.update(date=today, ts=now_ts, data=data)
-    for r in records:
-        e = cache["data"].get(r["ts_code"], {})
-        r["market_value_yi"] = e.get("market_value_yi")
-        r["topic"] = e.get("topic", "")
-
-
 @app.get("/api/trade-flow")
 async def get_trade_flow(
     account_id: str = Query("", description="账号ID，留空或 all 表示全部"),
@@ -6006,9 +5886,9 @@ async def get_trade_flow(
 ):
     """买卖流水：账户真实成交，买卖同表。
 
-    取代原来的「历史买入列表」—— 那个面板展示的是 stock_market_data 的信号报出，
-    表里没有买卖方向，本质是选股信号不是成交。这里的数据来自 trades 表，
-    由 sync.poller 定时拉 + sync.callbacks 实时回报填充。
+    取代原来的「历史买入列表」—— 那是上一代的产物：一张外部 MySQL 表存的选股信号
+    （大单净流入/DDE/概率/涨停标记），既不是成交也没有买卖方向。整套已删除。
+    这里的数据来自本地 trades 表，由 sync.poller 定时拉 + sync.callbacks 实时回报填充。
 
     观察者可见（含数量与金额）。普通用户只看得到自己的账号。
     """
@@ -6094,110 +5974,6 @@ async def get_trade_flow(
             "days": days,
         },
     }
-
-
-@app.get("/api/market-data/today")
-async def get_market_data_today(current_user: dict = Depends(get_user_or_viewer)):
-    """读取 stock_market_data 当日报出的股票，按报出时间(update_time)降序。
-    附带：报出时涨跌幅、最新价、DDE、大单净流入、题材、市值、近 7 日报出次数。"""
-    today = datetime.now().strftime("%Y%m%d")
-    try:
-        conn = get_stock_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT stock_code, stock_name, current_change, latest_price, DDE,
-                   大单净流入, update_time
-            FROM stock_market_data
-            WHERE date_string = %s
-            ORDER BY update_time DESC
-            """,
-            (today,),
-        )
-        rows = cursor.fetchall()
-        # 近 7 天（含今日）报出次数：按出现的不同日期计数（每股每日仅一条）
-        cutoff_7d = (datetime.now() - timedelta(days=7)).strftime("%Y%m%d")
-        cursor.execute(
-            """
-            SELECT stock_code, COUNT(DISTINCT date_string) AS cnt
-            FROM stock_market_data
-            WHERE date_string >= %s
-            GROUP BY stock_code
-            """,
-            (cutoff_7d,),
-        )
-        report_counts = {r[0]: int(r[1]) for r in cursor.fetchall()}
-        conn.close()
-    except MySQLUnavailable:
-        # 没配 MySQL 就没有「今日报出」这份数据源。返回空列表并说明原因，
-        # 不要 500 —— 这是可选数据源，缺了不该把整个面板打挂。
-        return {"status": "success", "records": [], "count": 0,
-                "note": "未配置股票基础库（config/mysql.json 或 STOCK_DB_* 环境变量），"
-                        "「今日报出」列表为空"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"读取 stock_market_data 失败: {str(e)}")
-
-    ts_codes = [_code_to_ts_code(row[0]) for row in rows if row and row[0]]
-    ensure_realtime_change_cache(ts_codes)
-    rt_map = _RT_CHANGE_CACHE.get("data", {})
-    rt_ts = _RT_CHANGE_CACHE.get("ts", 0.0)
-    records = []
-    for row in rows:
-        raw_code = row[0]
-        ts_code = _code_to_ts_code(raw_code)
-        records.append({
-            "stock_code": raw_code,
-            "ts_code": ts_code,
-            "stock_name": row[1] or "",
-            "current_change": float(row[2]) if row[2] is not None else None,
-            # 动态涨跌幅：由统一实时涨幅任务(tushare rt_k 每1min)写入缓存，qmt 不实时更新时回退
-            "dynamic_change": rt_map.get(ts_code),
-            "latest_price": float(row[3]) if row[3] is not None else None,
-            "dde": float(row[4]) if row[4] is not None else None,
-            "big_order_net": float(row[5]) if row[5] is not None else None,
-            "update_time": str(row[6]) if row[6] is not None else "",
-            "report_count_7d": report_counts.get(raw_code, 1),
-        })
-
-    # 尽力富集题材与市值（缓存 5 分钟，失败不影响主数据）
-    try:
-        _enrich_market_today_records(records)
-    except Exception as e:
-        print(f"[历史买入] 富集失败(忽略): {e}")
-
-    return {"status": "success", "trade_date": today, "records": records,
-            "dynamic_change_ts": rt_ts}
-
-
-class MarketDataKlineRequest(BaseModel):
-    stock_code: str
-    stock_name: str = ""
-    topic: str = ""
-
-
-@app.post("/api/market-data/kline-analysis")
-async def analyze_market_data_kline(
-    req: MarketDataKlineRequest,
-    current_user: dict = Depends(get_current_user),
-):
-    """对历史买入列表中的个股做大模型 K 线分析（复用记录板的分析逻辑）。"""
-    ts_code = _code_to_ts_code(req.stock_code)
-    if not ts_code:
-        raise HTTPException(status_code=400, detail="缺少股票代码，无法获取K线")
-    record = {
-        "stock_name": req.stock_name or "",
-        "stock_code": ts_code,
-        "logic": "",
-        "topic": req.topic or "",
-        "concept": "",
-        "limit_up_reason": req.topic or "",
-        "target_market_value_yi": None,
-        "current_market_value_yi": None,
-    }
-    result = await asyncio.to_thread(analyze_research_record_kline, record)
-    result["stock_name"] = req.stock_name or ""
-    result["stock_code"] = ts_code
-    return result
 
 
 # 设置卖出持仓指令

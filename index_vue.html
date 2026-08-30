@@ -520,53 +520,77 @@
             <div class="dashboard-header">
                 <div class="header-title">
                     <h1 style="font-size: 22px; font-weight: 900; letter-spacing: 1px;">买卖流水</h1>
-                    <span style="font-size: 12px; color: var(--text-secondary);">{{ marketDataTradeDate || '今日' }} 报出 {{ marketDataRecords.length }} 只 · 每5秒自动刷新</span>
+                    <span style="font-size: 12px; color: var(--text-secondary);">近 {{ tradeFlowDays }} 天 {{ tradeFlowRecords.length }} 笔 · 每5秒自动刷新</span>
                 </div>
                 <div class="header-controls" style="display: flex; align-items: center; gap: 12px;">
                     <el-button size="small" :type="viewerNotifyOn ? 'success' : 'default'" @click="toggleViewerNotify">
-                        {{ viewerNotifyOn ? '🔔 新报出通知：开' : '🔔 开启新报出通知' }}
+                        {{ viewerNotifyOn ? '🔔 新成交通知：开' : '🔔 开启新成交通知' }}
                     </el-button>
-                    <el-button size="small" @click="loadMarketDataToday(false)" :loading="marketDataLoading">刷新</el-button>
+                    <el-button size="small" @click="loadTradeFlow(false)" :loading="tradeFlowLoading">刷新</el-button>
                     <span style="color: var(--text-secondary); font-size: 13px; font-family: 'Share Tech Mono', monospace;">{{ viewerUsername }}</span>
                     <el-button size="small" @click="handleLogout">退出</el-button>
                 </div>
             </div>
             <div class="card" style="margin-top: 16px;">
+                <div style="padding: 12px 12px 0 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                    <el-radio-group v-model="tradeFlowSide" size="small">
+                        <el-radio-button label="all">全部</el-radio-button>
+                        <el-radio-button label="buy">买入</el-radio-button>
+                        <el-radio-button label="sell">卖出</el-radio-button>
+                    </el-radio-group>
+                    <el-select v-model="tradeFlowDays" size="small" style="width: 90px;">
+                        <el-option :value="1" label="今日" />
+                        <el-option :value="7" label="近7天" />
+                        <el-option :value="30" label="近30天" />
+                        <el-option :value="90" label="近90天" />
+                    </el-select>
+                    <el-input v-model="tradeFlowQuery" size="small" placeholder="代码/名称" clearable style="width: 140px;" />
+                    <span style="color: var(--text-secondary); font-size: 12px;">
+                        买 {{ tradeFlowSummary.buy_count || 0 }} 笔 / 卖 {{ tradeFlowSummary.sell_count || 0 }} 笔
+                        · 净买入 <span :class="(tradeFlowSummary.net_amount || 0) >= 0 ? 'profit' : 'loss'">{{ formatCash(tradeFlowSummary.net_amount) }}</span>
+                    </span>
+                </div>
                 <div style="padding: 0 10px;">
-                    <el-table :data="marketDataRecords" size="small" style="width: 100%;" max-height="80vh"
-                              empty-text="今日暂无报出数据" v-loading="marketDataLoading">
-                        <el-table-column prop="stock_name" label="名称" width="92" fixed>
+                    <el-table :data="tradeFlowRecords" size="small" style="width: 100%;" max-height="78vh"
+                              empty-text="所选区间内没有成交" v-loading="tradeFlowLoading">
+                        <el-table-column prop="stock_name" label="名称" min-width="120" fixed>
                             <template #default="{ row }">
-                                <span @click="goToStockDetail(row.ts_code || row.stock_code)" style="font-weight: bold; color: #fff; cursor: pointer; text-decoration: underline dotted rgba(255,255,255,0.3);" title="在雪球查看K线">{{ row.stock_name || '--' }}</span>
+                                <span @click="goToStockDetail(row.stock_code)" style="font-weight: bold; color: #fff; cursor: pointer; text-decoration: underline dotted rgba(255,255,255,0.3);" title="查看K线">{{ row.stock_name || '--' }}</span>
+                                <el-tag v-if="row.is_bond" size="small" type="warning" effect="plain" style="margin-left: 6px; height: 17px; line-height: 15px; padding: 0 4px;">转债</el-tag>
                                 <div style="font-size: 11px; color: var(--text-secondary); font-family: monospace;">{{ row.stock_code }}</div>
                             </template>
                         </el-table-column>
-                        <el-table-column prop="dynamic_change" label="实时涨幅" width="90" align="right" sortable>
+                        <el-table-column prop="traded_at" label="成交时间" width="150" sortable show-overflow-tooltip>
                             <template #default="{ row }">
-                                <span v-if="row.dynamic_change != null" :class="Number(row.dynamic_change) >= 0 ? 'profit' : 'loss'" style="font-weight: 800;">{{ formatPercent(row.dynamic_change) }}</span>
-                                <span v-else style="color: var(--text-secondary);">--</span>
+                                <span style="font-family: 'Share Tech Mono', monospace; color: var(--text-secondary);">{{ row.traded_at || '--' }}</span>
                             </template>
                         </el-table-column>
-                        <el-table-column prop="current_change" label="报出涨幅" width="86" align="right" sortable>
+                        <el-table-column prop="side" label="方向" width="70" align="center" sortable>
                             <template #default="{ row }">
-                                <span :class="Number(row.current_change) >= 0 ? 'profit' : 'loss'">{{ formatPercent(row.current_change) }}</span>
+                                <span :class="row.side === 'buy' ? 'profit' : 'loss'" style="font-weight: 800;">{{ row.side_label }}</span>
                             </template>
                         </el-table-column>
-                        <el-table-column prop="latest_price" label="最新价" width="80" align="right" sortable>
-                            <template #default="{ row }">{{ row.latest_price != null ? Number(row.latest_price).toFixed(2) : '--' }}</template>
+                        <el-table-column prop="price" label="成交价" width="96" align="right" sortable>
+                            <template #default="{ row }">{{ row.price ? row.price.toFixed(row.is_bond ? 3 : 2) : '--' }}</template>
                         </el-table-column>
-                        <el-table-column prop="topic" label="题材" min-width="140" show-overflow-tooltip>
-                            <template #default="{ row }"><span style="color: var(--primary-color);">{{ row.topic || '--' }}</span></template>
+                        <el-table-column prop="volume" label="数量" width="100" align="right" sortable>
+                            <template #default="{ row }">{{ row.volume }} <span style="color: var(--text-secondary); font-size: 11px;">{{ row.unit }}</span></template>
                         </el-table-column>
-                        <el-table-column prop="market_value_yi" label="市值" width="84" align="right" sortable>
-                            <template #default="{ row }">{{ formatYi(row.market_value_yi) }}</template>
-                        </el-table-column>
-                        <el-table-column prop="report_count_7d" label="7日报出" width="80" align="center" sortable>
+                        <el-table-column prop="amount" label="成交金额" width="120" align="right" sortable>
                             <template #default="{ row }">
-                                <span :style="{ color: Number(row.report_count_7d) > 1 ? 'var(--primary-color)' : 'var(--text-secondary)', fontWeight: Number(row.report_count_7d) > 1 ? 800 : 400 }">{{ row.report_count_7d }} 次</span>
+                                <span :class="row.side === 'buy' ? 'profit' : 'loss'" style="font-weight: 700;">{{ formatCash(row.amount) }}</span>
                             </template>
                         </el-table-column>
-                        <el-table-column prop="update_time" label="报出时间" width="150" sortable show-overflow-tooltip></el-table-column>
+                        <el-table-column prop="account_alias" label="账号" width="110" show-overflow-tooltip>
+                            <template #default="{ row }">
+                                <span style="color: var(--text-secondary);">{{ row.account_alias }}</span>
+                            </template>
+                        </el-table-column>
+                        <el-table-column prop="strategy_name" label="策略" min-width="90" show-overflow-tooltip>
+                            <template #default="{ row }">
+                                <span style="color: var(--text-secondary);">{{ row.strategy_name || '--' }}</span>
+                            </template>
+                        </el-table-column>
                     </el-table>
                 </div>
             </div>
@@ -2596,38 +2620,6 @@
             </template>
         </el-dialog>
 
-        <!-- 历史买入列表 · 买入下发对话框 -->
-        <el-dialog v-model="showMarketBuyDialog" title="买入下发" width="420px" custom-class="tech-dialog">
-            <div v-if="marketBuyStock" style="padding: 10px 0;">
-                <div style="margin-bottom: 18px; display: flex; justify-content: space-between; align-items: baseline;">
-                    <span style="font-weight: bold; color: #fff; font-size: 16px;">{{ marketBuyStock.stock_name }}</span>
-                    <span style="color: var(--text-secondary); font-family: monospace;">{{ marketBuyStock.ts_code || marketBuyStock.stock_code }}</span>
-                </div>
-                <div style="margin-bottom: 18px;">
-                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
-                        <span style="color: var(--text-secondary); font-size: 13px;">买入股数（100的整数倍）</span>
-                        <span style="color: var(--primary-color); font-weight: bold;">{{ marketBuyAmount }} 股</span>
-                    </div>
-                    <el-input-number
-                        v-model="marketBuyAmount"
-                        :min="100"
-                        :step="100"
-                        :precision="0"
-                        style="width: 100%;"
-                        controls-position="right" />
-                </div>
-                <p style="color: var(--text-secondary); line-height: 1.6; font-size: 12px;">
-                    点击确认后，下次同步持仓时将下发买入指令。客户端执行后会自动清除买入状态。
-                </p>
-            </div>
-            <template #footer>
-                <div style="display: flex; justify-content: flex-end; gap: 10px;">
-                    <el-button @click="showMarketBuyDialog = false">取消</el-button>
-                    <el-button type="danger" plain @click="confirmMarketBuy(true)">强制买入</el-button>
-                    <el-button type="primary" @click="confirmMarketBuy()">确认买入</el-button>
-                </div>
-            </template>
-        </el-dialog>
     </div>
 
     <script src="vue-app.js?v=viewer-ip-20260807"></script>

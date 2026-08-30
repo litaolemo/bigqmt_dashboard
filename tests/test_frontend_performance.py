@@ -42,8 +42,8 @@ class FrontendUserSwitchPerformanceTests(unittest.TestCase):
         ):
             self.assertIn(expected_call, body)
         self.assertIn("if (!boardLoaded) tasks.push(loadResearchBoard(false));", body)
-        self.assertIn("const marketDataTodayLoaded = marketDataRecords.value && marketDataRecords.value.length > 0;", body)
-        self.assertIn("if (!marketDataTodayLoaded) tasks.push(Promise.resolve(loadMarketDataToday(true)).catch(() => {}));", body)
+        self.assertIn("const tradeFlowLoaded = tradeFlowRecords.value && tradeFlowRecords.value.length > 0;", body)
+        self.assertIn("if (!tradeFlowLoaded) tasks.push(Promise.resolve(loadTradeFlow(true)).catch(() => {}));", body)
 
     def test_load_data_can_skip_auxiliary_work_and_fetch_market_in_parallel(self):
         args, body = extract_const_arrow("loadData")

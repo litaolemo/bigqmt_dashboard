@@ -1,7 +1,7 @@
 """可选数据源全部缺失时，接口必须降级而不是 500。
 
 README 承诺「没有任何配置也能启动」，这里守住那句话。真实发现过的问题：
-/api/market-data/today 在没配 MySQL 时抛 500，把整个「今日报出」面板打挂。
+接口在没配 MySQL 时抛 500，把整个面板打挂 —— 可选数据源缺失只该让对应字段留空。
 """
 
 import sys
@@ -56,12 +56,13 @@ class MissingOptionalSourceTests(unittest.TestCase):
         self.client.close()
         app_module.app.dependency_overrides.clear()
 
-    def test_market_data_today_returns_empty_list_not_500(self):
-        response = self.client.get("/api/market-data/today")
+    def test_trade_flow_works_without_any_external_source(self):
+        # 买卖流水只读本地 SQLite 的 trades 表，不该被 MySQL/Tushare 缺失影响
+        response = self.client.get("/api/trade-flow?days=7")
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()
-        self.assertEqual(body["records"], [])
-        self.assertIn("未配置", body.get("note", ""))
+        self.assertIsInstance(body["records"], list)
+        self.assertIn("buy_count", body["summary"])
 
     def test_stock_search_degrades_to_empty_results(self):
         response = self.client.get("/api/stocks/search?q=平安")
