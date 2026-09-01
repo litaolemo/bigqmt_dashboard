@@ -100,6 +100,38 @@ def download_history(codes, period="1m", start_time="", end_time=""):
         return False
 
 
+def price_reference(code):
+    """算价格笼子要的四个数：最新价、昨收、涨停、跌停。
+
+    最新价和昨收来自快照，涨跌停来自合约详情（走 FormulaServer 直连快速路径，
+    比 RPC 快一个量级）。取不到的项是 None，调用方据此跳过校验。
+    """
+    normalized = instruments.normalize_code(code)
+    reference = {"code": normalized, "last_price": None, "last_close": None,
+                 "up_stop": None, "down_stop": None}
+
+    tick = (get_ticks([normalized], timeout_seconds=UI_QUOTE_TIMEOUT_SECONDS)
+            or {}).get(normalized) or {}
+    reference["last_price"] = _positive(tick.get("lastPrice") or tick.get("last_price"))
+    reference["last_close"] = _positive(tick.get("lastClose") or tick.get("last_close"))
+
+    detail = get_instrument_detail(normalized) or {}
+    reference["up_stop"] = _positive(detail.get("UpStopPrice"))
+    reference["down_stop"] = _positive(detail.get("DownStopPrice"))
+    if reference["last_close"] is None:
+        # 合约详情里的 SettlementPrice 就是昨收，快照拿不到时用它兜底
+        reference["last_close"] = _positive(detail.get("SettlementPrice"))
+    return reference
+
+
+def _positive(value):
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
 def get_minute_bars(codes, count=241, period="1m", field_list=None,
                     download_if_missing=True):
     """拉 K 线。缺数据的标的先让大QMT 下载再重试一次。

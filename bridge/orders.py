@@ -15,21 +15,27 @@ import threading
 import time
 
 from bridge import instruments
+from bridge import optypes
+from bridge import market as bridge_market
 from bridge import pool as bridge_pool
+from bridge import pricecage
+from bridge import pricetypes
 
 SIDE_BUY = "buy"
 SIDE_SELL = "sell"
 
-# 报价方式。默认最新价：面板上点「卖 50%」要的是尽快成交，不是挂一个可能不成的价。
+# 报价方式。完整的选价类型表（含分交易所的市价指令）在 bridge.pricetypes，
+# 这里只留几个常用别名，老调用方不用改。默认最新价：面板上点「卖 50%」要的是
+# 尽快成交，不是挂一个可能不成的价。
 PRICE_TYPE_LATEST = "latest"
 PRICE_TYPE_FIX = "fix"
-PRICE_TYPE_PEER = "peer"        # 对手方最优价
+PRICE_TYPE_PEER = "peer"        # 对手价（对方一档）
+PRICE_TYPE_MINE = "mine"        # 挂单价（本方一档）
 
-_PRICE_TYPE_CONSTS = {
-    PRICE_TYPE_LATEST: "LATEST_PRICE",
-    PRICE_TYPE_FIX: "FIX_PRICE",
-    PRICE_TYPE_PEER: "MARKET_PEER_PRICE_FIRST",
-}
+
+def price_type_choices(stock_code=""):
+    """该标的能用的选价类型。见 bridge.pricetypes。"""
+    return pricetypes.choices_for(stock_code)
 
 _HOOKS = {"risk_gate": None, "audit_sink": None}
 _LOCK = threading.Lock()
@@ -70,20 +76,40 @@ def _write_audit(record):
         print(f"[下单审计] 写入失败: {e}")
 
 
-def _resolve_price_type(compat, price_type):
-    name = _PRICE_TYPE_CONSTS.get(str(price_type or PRICE_TYPE_LATEST).lower())
-    if name is None:
-        raise OrderRejected("不支持的报价方式: %s" % price_type)
-    value = getattr(compat, name, None)
-    if value is None:
-        raise OrderRejected("桥接层缺少报价常量 %s" % name)
-    return value
+def price_cage_for(code, side, now=None):
+    """该品种此刻的限价有效范围。"""
+    from datetime import datetime
+
+    now = now or datetime.now()
+    session = pricecage.session_of(now)
+    reference = bridge_market.price_reference(code)
+    base = pricecage.base_price_of(session, reference["last_price"],
+                                   reference["last_close"])
+    cage = pricecage.compute(code, side, base, session,
+                             up_stop=reference["up_stop"],
+                             down_stop=reference["down_stop"])
+    cage["last_price"] = reference["last_price"]
+    cage["last_close"] = reference["last_close"]
+    return cage
+
+
+def _resolve_price_type(price_type, stock_code):
+    """解析成 passorder 的 prType。
+
+    prType 是直接透传给 passorder 的整数，服务端不做二次映射，所以这里给对值
+    就够了 —— 不需要再从 xtconstant 取常量名。分交易所的市价指令在这一步
+    就会被拦下（深市票选沪市的 42 之类）。
+    """
+    try:
+        return pricetypes.resolve(price_type, stock_code)
+    except ValueError as e:
+        raise OrderRejected(str(e))
 
 
 def place_order(account_id, stock_code, side, volume, price=0.0,
                 price_type=PRICE_TYPE_LATEST, sell_all=False,
                 strategy_name="dashboard", remark="", operator="",
-                skip_risk=False, bypass=None):
+                skip_risk=False, bypass=None, trade_mode=""):
     """下一笔单。
 
     永远返回结果 dict，不为业务拒单抛异常 —— 清仓这类批量场景要逐笔收集结果，
@@ -98,6 +124,7 @@ def place_order(account_id, stock_code, side, volume, price=0.0,
         "price_type": str(price_type or PRICE_TYPE_LATEST).lower(),
         "order_sys_id": None, "status": "rejected", "message": "",
         "unit": instruments.unit_name(code),
+        "trade_mode": str(trade_mode or "").strip().lower(),
         # 手动操作可以显式绕过某些闸门（历史行为：手动买入忽略「停止买入」开关）。
         # 绕过什么都会写进审计流水，不是悄悄放行。
         "bypass": set(bypass or ()),
@@ -113,6 +140,19 @@ def place_order(account_id, stock_code, side, volume, price=0.0,
             raise OrderRejected(
                 "账号 %s 未开启下单（config/accounts.json 的 allow_order）" % account_id)
 
+        # 买卖指令类型。同一个「买」在普通账户和信用账户上是两条不同的指令，
+        # 要按账户类型定，不能一律 23/24。见 bridge/optypes.py。
+        account_type = bridge_pool.account_type_of(account_id)
+        try:
+            order_type, mode_spec = optypes.resolve(
+                result["trade_mode"], account_type, side)
+        except ValueError as e:
+            raise OrderRejected(str(e))
+        result["trade_mode"] = mode_spec["value"]
+        result["order_type"] = order_type
+        result["trade_mode_label"] = mode_spec["side_label"]
+        result["account_type"] = account_type
+
         # 数量规整必须在风控之前：风控要按真实报单量判断
         adjusted = instruments.round_volume(code, volume, sell_all=sell_all)
         if adjusted <= 0:
@@ -122,19 +162,36 @@ def place_order(account_id, stock_code, side, volume, price=0.0,
                     volume, result["unit"]))
         result["volume"] = adjusted
 
+        pr_type, price_spec = _resolve_price_type(result["price_type"], code)
+        result["pr_type"] = pr_type
+        result["price_role"] = price_spec["price_role"]
+        result["price_type_label"] = price_spec["label"]
+
         normalized_price = instruments.round_price(code, price)
         result["price"] = normalized_price
-        if result["price_type"] == PRICE_TYPE_FIX and normalized_price <= 0:
-            raise OrderRejected("限价委托必须给出有效价格")
+        if price_spec["price_role"] == pricetypes.PRICE_ROLE_ORDER:
+            # price 就是委托价，要受价格笼子约束
+            if normalized_price <= 0:
+                raise OrderRejected("%s 必须给出有效价格" % price_spec["label"])
+            # 超出有效申报范围交易所会直接废单，不如在这里说清楚。
+            # 算不出范围时放行 —— 不能凭猜的基准价拦下用户的单。
+            cage = price_cage_for(code, side)
+            result["price_cage"] = cage
+            ok, message = pricecage.check(code, side, normalized_price, cage)
+            if not ok:
+                raise OrderRejected(message)
+        elif price_spec["price_role"] == pricetypes.PRICE_ROLE_NONE:
+            # 档位价/最新价这类，price 无意义，填 0 占位免得误导
+            normalized_price = 0.0
+            result["price"] = 0.0
+        # PRICE_ROLE_PROTECT：price 是保护限价，0 表示取涨跌停价，不做笼子校验
 
         if not skip_risk:
             _run_risk_gate(dict(result))
 
-        compat = bridge_pool._compat()
         trader = bridge_pool.get_trader(account_id)
         acc = bridge_pool.get_account_ref(account_id)
-        order_type = compat.STOCK_BUY if side == SIDE_BUY else compat.STOCK_SELL
-        price_const = _resolve_price_type(compat, result["price_type"])
+        price_const = pr_type
 
         response = trader.order_stock_result(
             acc, code, order_type, adjusted, price_const, normalized_price,

@@ -114,6 +114,16 @@ def get_account_ref(account_id):
     return _compat().StockAccount(cfg.account_id, cfg.account_type)
 
 
+def account_type_of(account_id):
+    """账户类型（STOCK / CREDIT）。
+
+    没配到这个账号时返回 STOCK：下单路径上后面还有
+    allow_order 会拦，这里不必再抛一次。
+    """
+    cfg = bridge_config.get_account(account_id)
+    return cfg.account_type if cfg else "STOCK"
+
+
 def allow_order(account_id):
     """本地是否允许对该账号下单。大QMT 侧还有 rpc_allow_order_methods，两边都开才行。"""
     cfg = bridge_config.get_account(account_id)

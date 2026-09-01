@@ -21,6 +21,7 @@ HTML = (ROOT / "index_vue.html").read_text(encoding="utf-8")
 PAIRED_TAGS = (
     "el-row", "el-col", "el-dialog", "el-table", "el-table-column",
     "el-tabs", "el-tab-pane", "el-select", "el-radio-group", "template",
+    "el-option-group",
 )
 
 
@@ -73,6 +74,47 @@ class MainGridTests(unittest.TestCase):
             self.assertIn(title, left, "%s 应该在左栏" % title)
         for title in ("交易日历", "持仓分布"):
             self.assertIn(title, right, "%s 应该在右栏" % title)
+
+
+class OrderPricingBlockTests(unittest.TestCase):
+    """三个下单弹窗共用一套报价块，少一个就有一条下单路径绕过价格笼子。"""
+
+    EXPECTED_DIALOGS = 3
+
+    def test_every_order_dialog_has_the_pricing_block(self):
+        self.assertEqual(HTML.count('v-model="orderPriceType"'), self.EXPECTED_DIALOGS)
+        self.assertEqual(HTML.count('v-model="orderLimitPrice"'), self.EXPECTED_DIALOGS)
+        self.assertEqual(HTML.count("{{ orderPriceError }}"), self.EXPECTED_DIALOGS)
+
+    def test_price_types_are_rendered_grouped_not_as_a_radio_row(self):
+        # 二十来个选价类型排成一行 radio 是看不了的
+        self.assertNotIn("orderPriceTypes", HTML, "还在平铺全部选项")
+        self.assertEqual(HTML.count('v-for="g in orderPriceTypeGroups"'), self.EXPECTED_DIALOGS)
+
+    def test_price_input_follows_the_price_role(self):
+        # protect 类型也要能填保护限价，所以是 accepts 不是 needs
+        self.assertEqual(HTML.count('v-if="orderAcceptsPrice"'), self.EXPECTED_DIALOGS)
+        self.assertEqual(HTML.count("{{ orderPriceLabel }}"), self.EXPECTED_DIALOGS)
+        # 笼子只约束限价单，市价指令不该显示它
+        self.assertEqual(HTML.count('v-if="orderNeedsPrice"'), self.EXPECTED_DIALOGS)
+
+
+    def test_trade_mode_selector_is_hidden_when_there_is_nothing_to_choose(self):
+        # 普通账户只有「普通买卖」一条，不要占一行界面
+        self.assertEqual(HTML.count('v-if="orderTradeModeVisible"'), self.EXPECTED_DIALOGS)
+        self.assertEqual(HTML.count('v-model="orderTradeMode"'), self.EXPECTED_DIALOGS)
+
+    def test_trade_mode_label_comes_from_the_side_aware_list(self):
+        # 列表里的 side_label 是前端按买/卖算出来的：
+        # 卖出弹窗上写「担保品买入」会让人下错单
+        self.assertEqual(HTML.count("m.side_label"), self.EXPECTED_DIALOGS * 2)
+
+
+class PendingOrderPanelTests(unittest.TestCase):
+    def test_pending_orders_are_listed_with_a_cancel_button(self):
+        self.assertIn("未成交委托", HTML)
+        self.assertIn("tradeFlowPending", HTML)
+        self.assertIn("cancelPendingOrder(", HTML)
 
 
 class RemovedFeatureTests(unittest.TestCase):

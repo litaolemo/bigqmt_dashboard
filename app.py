@@ -667,6 +667,21 @@ def init_db():
     ''')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_order_audit_account_time ON order_audit (account_id, created_at DESC)')
 
+    # 下单偏好：记住这个人上一次在这个账号、这个方向上真正报出去用的
+    # 交易类型和报价方式，下次开弹窗直接预选。按方向分开存 —— 买习惯挂单、
+    # 卖习惯对手价是很常见的组合。
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS order_preferences (
+        username TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        side TEXT NOT NULL,
+        trade_mode TEXT,
+        price_type TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (username, account_id, side)
+    )
+    ''')
+
     conn.commit()
     conn.close()
 
@@ -5455,16 +5470,27 @@ async def toggle_position_lock(
 
 
 # 卖出持仓指令模型
+# 报价方式与价格：所有下单接口共用这两个可选字段。
+#   price_type = latest / fix / peer / mine / …，默认 latest，完整表在 bridge/pricetypes.py
+#   price 只有限价类才需要，并且要落在价格笼子里
+#   trade_mode 买卖指令类型，留空按账户类型取默认（普通账户普通买卖，
+#              信用账户担保品买卖），完整表在 bridge/optypes.py
 class SellPositionCommand(BaseModel):
     account_id: str
     stock_code: str
     percentage: int
+    price_type: str = "latest"
+    price: float = 0.0
+    trade_mode: str = ""
 
 
 class SellAmountCommand(BaseModel):
     account_id: str
     stock_code: str
     amount: int
+    price_type: str = "latest"
+    price: float = 0.0
+    trade_mode: str = ""
 
 
 # 买入持仓指令模型
@@ -5472,6 +5498,9 @@ class BuyPositionCommand(BaseModel):
     account_id: str
     stock_code: str
     percentage: int
+    price_type: str = "latest"
+    price: float = 0.0
+    trade_mode: str = ""
 
 
 # 新买入指令模型。两种下单方式二选一：
@@ -5484,6 +5513,33 @@ class NewBuyPositionCommand(BaseModel):
     amount: int = 0
     cash_amount: float = 0.0
     force: bool = False
+    price_type: str = "latest"
+    price: float = 0.0
+    trade_mode: str = ""
+
+
+# 委托状态（xtconstant）。前端要按这个显示「已报/部成/已撤」并决定能不能撤单。
+ORDER_STATUS_LABELS = {
+    48: "未报", 49: "待报", 50: "已报", 51: "已报待撤", 52: "部成待撤",
+    53: "部撤", 54: "已撤", 55: "部成", 56: "已成", 57: "废单", 255: "未知",
+}
+# 还能撤的状态。51/52 已经在撤销途中，再撤一次没意义。
+CANCELABLE_ORDER_STATUSES = frozenset({48, 49, 50, 55})
+# 还没有最终结果的状态，买卖流水里要显示出来
+PENDING_ORDER_STATUSES = frozenset({48, 49, 50, 51, 52, 55})
+
+
+def describe_order_status(status):
+    try:
+        status = int(status)
+    except (TypeError, ValueError):
+        return {"code": None, "label": "未知", "cancelable": False, "pending": False}
+    return {
+        "code": status,
+        "label": ORDER_STATUS_LABELS.get(status, "状态%d" % status),
+        "cancelable": status in CANCELABLE_ORDER_STATUSES,
+        "pending": status in PENDING_ORDER_STATUSES,
+    }
 
 
 # ============================================================================
@@ -5551,16 +5607,19 @@ def accounts_holding(stock_code):
 
 
 def place_dashboard_order(account_id, stock_code, side, volume, operator="",
-                          sell_all=False, remark="dashboard", strategy_name="dashboard"):
-    """面板下单统一入口。风控与审计在 bridge.orders 里，这里只负责传参。"""
+                          sell_all=False, remark="dashboard", strategy_name="dashboard",
+                          price_type="latest", price=0.0, bypass=None, trade_mode=""):
+    """面板下单统一入口。风控、价格笼子与审计都在 bridge.orders 里，这里只负责传参。"""
     return bridge_orders.place_order(
         account_id=account_id, stock_code=stock_code, side=side, volume=volume,
         sell_all=sell_all, operator=operator, remark=remark,
-        strategy_name=strategy_name,
+        strategy_name=strategy_name, price_type=price_type, price=price,
+        bypass=bypass, trade_mode=trade_mode,
     )
 
 
-def sell_by_percentage(account_id, stock_code, percentage, operator=""):
+def sell_by_percentage(account_id, stock_code, percentage, operator="",
+                       price_type="latest", price=0.0, trade_mode=""):
     """按可用量的百分比卖出。100% 走 sell_all，零股一并卖掉。"""
     position = live_position(account_id, stock_code)
     available = (position or {}).get("can_use_volume", 0)
@@ -5575,6 +5634,7 @@ def sell_by_percentage(account_id, stock_code, percentage, operator=""):
         account_id, stock_code, bridge_orders.SIDE_SELL, volume,
         operator=operator, sell_all=sell_all,
         remark="sell_%d%%" % percentage,
+        price_type=price_type, price=price, trade_mode=trade_mode,
     )
 
 
@@ -5688,6 +5748,64 @@ def volume_from_cash(stock_code, cash_amount, price=None):
                           % (cash_amount, spec["code"], spec["min_volume"],
                              spec["unit"], need))
     return volume, price, ""
+
+
+# ---- 下单偏好：记住上一次真正报出去用的交易类型 / 报价方式 ----
+
+def remember_order_preference(username, results, price_type, trade_mode):
+    """报单成功后记下这个人的选择，下次开弹窗预选。
+
+    只在成功后写：被风控拦下的那次不算「用过」。清仓这类不带用户选择的
+    路径不调这里 —— 否则会把默认值覆盖掉用户的习惯。
+    写失败不能影响下单结果：单已经报出去了，为了记个偏好报 500 很荒唐。
+    """
+    username = str(username or "").strip()
+    if not username:
+        return
+    rows = [r for r in results
+            if r.get("ok") and r.get("account_id") and r.get("side")]
+    if not rows:
+        return
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        for row in rows:
+            cursor.execute('''
+                INSERT INTO order_preferences
+                    (username, account_id, side, trade_mode, price_type, updated_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(username, account_id, side) DO UPDATE SET
+                    trade_mode = excluded.trade_mode,
+                    price_type = excluded.price_type,
+                    updated_at = CURRENT_TIMESTAMP
+            ''', (username, row["account_id"], row["side"],
+                  row.get("trade_mode") or trade_mode or "",
+                  row.get("price_type") or price_type or ""))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[下单偏好] 保存失败（不影响下单）: {e}")
+
+
+def load_order_preference(username, account_id, side):
+    """该人在该账号、该方向上上次用的选择。没记录返回空字典。"""
+    if not (username and account_id and side):
+        return {}
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT trade_mode, price_type FROM order_preferences "
+            "WHERE username = ? AND account_id = ? AND side = ?",
+            (str(username), str(account_id), str(side)))
+        row = cursor.fetchone()
+        conn.close()
+    except Exception as e:
+        print(f"[下单偏好] 读取失败: {e}")
+        return {}
+    if not row:
+        return {}
+    return {"trade_mode": row[0] or "", "price_type": row[1] or ""}
 
 
 def order_response(result):
@@ -5885,10 +6003,13 @@ async def set_buy_new_position_command(
             account_id=account_id, stock_code=command.stock_code,
             side=bridge_orders.SIDE_BUY, volume=volume,
             operator=operator, remark="buy_new", bypass=["stop_buy"],
+            price_type=command.price_type, price=command.price,
+            trade_mode=command.trade_mode,
         )
         for account_id in targets
     ]
 
+    remember_order_preference(operator, results, command.price_type, command.trade_mode)
     if command.account_id == "all":
         return batch_order_response(
             results, "买入 %s %d%s" % (spec["code"], volume, spec["unit"]))
@@ -5987,6 +6108,7 @@ async def get_trade_flow(
     return {
         "status": "success",
         "records": records,
+        "pending": pending_orders(account_id, side=side, keyword=keyword),
         "summary": {
             "buy_count": buy_count, "sell_count": sell_count,
             "buy_amount": round(buy_amount, 2), "sell_amount": round(sell_amount, 2),
@@ -5994,6 +6116,81 @@ async def get_trade_flow(
             "days": days,
         },
     }
+
+
+def pending_orders(account_id="", side="all", keyword=""):
+    """还没有最终结果的委托：已报、部成、撤单途中。
+
+    成交流水只看得到「已经成交的」，下单之后到成交之间那段是盲区 —— 报进去没有、
+    被没被废单、还挂着多少，都要靠这张表。数据由 sync.poller 定时拉 +
+    sync.callbacks 实时回报填充。
+    """
+    conditions = ["order_status IN (%s)" % ",".join("?" * len(PENDING_ORDER_STATUSES))]
+    params = list(sorted(PENDING_ORDER_STATUSES))
+    if account_id and account_id.lower() != "all":
+        conditions.append("account_id = ?")
+        params.append(account_id)
+    if side == "buy":
+        conditions.append("order_type = 23")
+    elif side == "sell":
+        conditions.append("order_type = 24")
+    if keyword:
+        conditions.append("(stock_code LIKE ? OR instrument_name LIKE ?)")
+        params.extend(["%%%s%%" % keyword, "%%%s%%" % keyword])
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "SELECT account_id, order_id, order_sysid, stock_code, instrument_name, "
+            "order_type, order_status, order_volume, traded_volume, price, "
+            "traded_price, order_time, strategy_name, status_msg "
+            "FROM orders WHERE %s ORDER BY order_time DESC LIMIT 200"
+            % " AND ".join(conditions), params)
+        columns = ["account_id", "order_id", "order_sysid", "stock_code",
+                   "instrument_name", "order_type", "order_status", "order_volume",
+                   "traded_volume", "price", "traded_price", "order_time",
+                   "strategy_name", "status_msg"]
+        rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        cursor.execute("SELECT account_id, COALESCE(alias, account_name, account_id) FROM users")
+        aliases = dict(cursor.fetchall())
+    except Exception as e:
+        print(f"[委托] 读取未成交委托失败: {e}")
+        return []
+    finally:
+        conn.close()
+
+    result = []
+    for row in rows:
+        status = describe_order_status(row.get("order_status"))
+        order_time = _t0_safe_int(row.get("order_time"))
+        volume = _t0_safe_int(row.get("order_volume"))
+        traded = _t0_safe_int(row.get("traded_volume"))
+        result.append({
+            "account_id": row["account_id"],
+            "account_alias": aliases.get(row["account_id"], row["account_id"]),
+            "order_id": row["order_id"],
+            "order_sysid": row.get("order_sysid") or "",
+            "stock_code": row["stock_code"],
+            "stock_name": row.get("instrument_name") or "",
+            "side": "buy" if row.get("order_type") == 23 else "sell",
+            "side_label": "买入" if row.get("order_type") == 23 else "卖出",
+            "price": _t0_safe_float(row.get("price")),
+            "volume": volume,
+            "traded_volume": traded,
+            "left_volume": max(volume - traded, 0),
+            "unit": instruments.unit_name(row["stock_code"] or ""),
+            "is_bond": instruments.is_convertible_bond(row["stock_code"] or ""),
+            "status": status["label"],
+            "status_code": status["code"],
+            "cancelable": status["cancelable"],
+            "status_msg": row.get("status_msg") or "",
+            "strategy_name": row.get("strategy_name") or "",
+            "order_time": order_time,
+            "ordered_at": (datetime.fromtimestamp(order_time).strftime("%Y-%m-%d %H:%M:%S")
+                           if order_time > 0 else ""),
+        })
+    return result
 
 
 # 设置卖出持仓指令
@@ -6025,9 +6222,12 @@ async def set_sell_position_command(
 
     operator = current_user.get("username") or current_user.get("account_id") or ""
     results = [
-        sell_by_percentage(account_id, command.stock_code, command.percentage, operator)
+        sell_by_percentage(account_id, command.stock_code, command.percentage,
+                           operator, command.price_type, command.price,
+                           command.trade_mode)
         for account_id in targets
     ]
+    remember_order_preference(operator, results, command.price_type, command.trade_mode)
 
     if command.account_id == "all":
         return batch_order_response(
@@ -6058,7 +6258,10 @@ async def set_sell_amount_command(
     result = place_dashboard_order(
         command.account_id, command.stock_code, bridge_orders.SIDE_SELL, volume,
         operator=operator, sell_all=(volume >= available), remark="sell_amount",
+        price_type=command.price_type, price=command.price,
+        trade_mode=command.trade_mode,
     )
+    remember_order_preference(operator, [result], command.price_type, command.trade_mode)
     return order_response(result)
 
 
@@ -6245,8 +6448,11 @@ async def set_buy_position_command(
         volume = int(held * command.percentage / 100 * factor)
         results.append(place_dashboard_order(
             account_id, command.stock_code, bridge_orders.SIDE_BUY, volume,
-            operator=operator, remark="buy_%d%%" % command.percentage))
+            operator=operator, remark="buy_%d%%" % command.percentage,
+            price_type=command.price_type, price=command.price,
+            trade_mode=command.trade_mode))
 
+    remember_order_preference(operator, results, command.price_type, command.trade_mode)
     if command.account_id == "all":
         return batch_order_response(
             results, "加仓 %s %d%%" % (command.stock_code, command.percentage))
@@ -8009,7 +8215,14 @@ async def get_orders_endpoint(
 
     for row in rows:
         row["side"] = "buy" if row["order_type"] == 23 else "sell"
+        row["side_label"] = "买入" if row["order_type"] == 23 else "卖出"
         row["unit"] = instruments.unit_name(row["stock_code"])
+        status = describe_order_status(row.get("order_status"))
+        row["status"] = status["label"]
+        row["cancelable"] = status["cancelable"]
+        row["pending"] = status["pending"]
+        row["left_volume"] = max(
+            _t0_safe_int(row.get("order_volume")) - _t0_safe_int(row.get("traded_volume")), 0)
     return {"status": "success", "orders": rows, "count": len(rows)}
 
 
@@ -8083,6 +8296,8 @@ async def get_instrument_spec(
     stock_code: str,
     cash_amount: float = Query(0, ge=0, description="给定金额时，换算出可申报数量"),
     volume: int = Query(0, ge=0, description="给定数量时，估算下单金额"),
+    account_id: str = Query("", description="账号ID，用于给出该账户能用的买卖指令类型"),
+    side: str = Query("", description="buy / sell，用于取回上次在该方向上用过的选择"),
     current_user: dict = Depends(get_current_user)
 ):
     """品种规则 + 实时价 + 数量/金额互算。
@@ -8100,6 +8315,37 @@ async def get_instrument_spec(
     price = bridge_market.last_price(stock_code)
     spec["last_price"] = price
     spec["price_source"] = "bridge" if price else ""
+
+    # 报价方式选项，按该标的所属交易所过滤 —— 深市票不该出现沪市专有的市价指令
+    spec["price_types"] = bridge_orders.price_type_choices(stock_code)
+    spec["price_type_groups"] = list(bridge_orders.pricetypes.GROUP_ORDER)
+
+    # 买卖指令类型，按账户类型给。普通账户只有一条，前端据此隐藏选择器；
+    # 信用账户才会出现担保品 / 融资融券 / 还券还款。
+    account_type = bridge_pool.account_type_of(account_id) if account_id else "STOCK"
+    spec["account_type"] = account_type
+    spec["trade_modes"] = bridge_orders.optypes.choices_for(account_type)
+    spec["default_trade_mode"] = bridge_orders.optypes.default_mode_for(account_type)
+    spec["default_price_type"] = bridge_orders.pricetypes.DEFAULT_KEY
+
+    # 上次用过的选择，校验过才给：账户类型或交易所变了，记住的那个
+    # 可能已经用不了（比如把沪市票的 42 拿到深市票上），那就退回默认。
+    remembered = load_order_preference(
+        current_user.get("username"), account_id, str(side or "").lower())
+    if remembered.get("trade_mode") in {m["value"] for m in spec["trade_modes"]}:
+        spec["default_trade_mode"] = remembered["trade_mode"]
+    if remembered.get("price_type") in {t["value"] for t in spec["price_types"]}:
+        spec["default_price_type"] = remembered["price_type"]
+
+    # 价格笼子：限价申报的有效范围。买卖两侧目前口径一致，各给一份便于前端直接用。
+    try:
+        spec["price_cage"] = {
+            "buy": bridge_orders.price_cage_for(stock_code, bridge_orders.SIDE_BUY),
+            "sell": bridge_orders.price_cage_for(stock_code, bridge_orders.SIDE_SELL),
+        }
+    except Exception as e:
+        print(f"[价格笼子] {stock_code} 计算失败: {e}")
+        spec["price_cage"] = None
 
     # 数量 -> 预计金额
     if volume > 0:

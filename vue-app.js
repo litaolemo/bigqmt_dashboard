@@ -163,6 +163,8 @@ const app = createApp({
 
         // 买卖流水（账户真实成交）
         const tradeFlowRecords = ref([]);
+        const tradeFlowPending = ref([]);      // 已下单未成交，可撤
+        const cancellingOrders = ref(new Set());
         const tradeFlowSummary = ref({});
         const tradeFlowLoading = ref(false);
         const tradeFlowSide = ref('all');
@@ -242,6 +244,179 @@ const app = createApp({
         const newBuySelectedStock = ref(null);
         const newBuyAmount = ref(100);
 
+        // ===== 报价方式与价格笼子（三个下单弹窗共用）=====
+        // 弹窗是模态的，同时只会开一个，所以一套状态够用。
+        const orderPriceType = ref('latest');
+        const orderLimitPrice = ref(0);
+        const orderQuote = ref(null);          // /api/instrument 的返回
+        const orderQuoteLoading = ref(false);
+        const orderQuoteSide = ref('buy');
+        const orderAccountId = ref('');
+        const orderTradeMode = ref('');
+
+        const loadOrderQuote = async (code, side) => {
+            orderQuoteSide.value = side || 'buy';
+            orderQuote.value = null;
+            if (!code) return;
+            orderQuoteLoading.value = true;
+            try {
+                // 带上账号和方向：买卖指令类型看的是账户类型，而服务端还会按
+                // （人、账号、方向）把上次用过的选择当默认值送回来
+                const params = new URLSearchParams();
+                if (orderAccountId.value && orderAccountId.value !== 'all') {
+                    params.set('account_id', orderAccountId.value);
+                }
+                params.set('side', orderQuoteSide.value);
+                const resp = await fetch(
+                    `/api/instrument/${encodeURIComponent(code)}?${params}`, {
+                    headers: { 'Authorization': `Bearer ${accessToken.value}` }
+                });
+                if (resp.ok) {
+                    orderQuote.value = (await resp.json()).instrument;
+                    orderTradeMode.value = (orderQuote.value
+                        && orderQuote.value.default_trade_mode) || '';
+                    orderPriceType.value = (orderQuote.value
+                        && orderQuote.value.default_price_type) || 'latest';
+                    // 限价默认填最新价，用户改之前至少是个合法值。
+                    // 放在报价方式之后：上面那一行会触发 orderPriceRole 的 watcher，
+                    // 它会把保护限价归零，先填价的话会被抹掉。
+                    await nextTick();
+                    if (orderQuote.value && orderQuote.value.last_price
+                            && orderPriceRole.value === 'order') {
+                        orderLimitPrice.value = orderQuote.value.last_price;
+                    }
+                }
+            } catch (e) {
+                console.error('获取报价信息失败', e);
+            } finally {
+                orderQuoteLoading.value = false;
+            }
+        };
+
+        const resetOrderPricing = (code, side, accountId) => {
+            orderPriceType.value = 'latest';
+            orderLimitPrice.value = 0;
+            orderTradeMode.value = '';
+            orderAccountId.value = accountId || '';
+            loadOrderQuote(code, side);
+        };
+
+        // 买卖指令类型。普通账户只有「普通买卖」一条，那就不要占一行界面；
+        // 信用账户才有担保品 / 融资融券 / 还券还款的区别，而那个区别必须由人来选 ——
+        // 推错了就是一笔真实但业务类型不同的单。
+        // 名称跟着方向走：卖出弹窗上写「担保品买入」是个会让人下错单的显示。
+        const orderTradeModes = computed(() => {
+            const field = orderQuoteSide.value === 'sell' ? 'sell_label' : 'buy_label';
+            return ((orderQuote.value && orderQuote.value.trade_modes) || [])
+                .map(m => Object.assign({}, m, { side_label: m[field] || m.label }));
+        });
+        const orderTradeModeVisible = computed(() => orderTradeModes.value.length > 1);
+        const orderTradeModeHint = computed(() => {
+            const mode = orderTradeModes.value.find(m => m.value === orderTradeMode.value);
+            return mode ? mode.hint : '';
+        });
+
+        const orderPriceTypes = computed(() =>
+            (orderQuote.value && orderQuote.value.price_types) || [
+                { value: 'latest', label: '最新价', group: '常用', price_role: 'none',
+                  needs_price: false, accepts_price: false, hint: '按当前最新成交价报' },
+                { value: 'fix', label: '限价', group: '常用', price_role: 'order',
+                  needs_price: true, accepts_price: true, hint: '自己指定价格，受价格笼子约束' },
+            ]);
+
+        // 按分组切开给 el-option-group 用。二十来个选项排一行 radio 是看不了的，
+        // 而且「常用」以外的（盘口档位、分交易所的市价指令）平时不该占视线。
+        const orderPriceTypeGroups = computed(() => {
+            const order = (orderQuote.value && orderQuote.value.price_type_groups)
+                       || ['常用', '一档', '市价', '档位', '盘后'];
+            const buckets = new Map();
+            orderPriceTypes.value.forEach(t => {
+                const g = t.group || '其他';
+                if (!buckets.has(g)) buckets.set(g, []);
+                buckets.get(g).push(t);
+            });
+            const known = order.filter(g => buckets.has(g));
+            const rest = [...buckets.keys()].filter(g => !order.includes(g));
+            return [...known, ...rest].map(g => ({ label: g, items: buckets.get(g) }));
+        });
+
+        const orderPriceSpec = computed(() =>
+            orderPriceTypes.value.find(t => t.value === orderPriceType.value) || null);
+
+        // price 字段有三种语义，界面得跟着变，否则用户不知道自己填的是什么价：
+        //   order   —— 就是委托价，必填，受笼子约束
+        //   protect —— 保护限价，选填，留空按涨跌停价保护
+        //   none    —— 与本次委托无关，不显示输入框
+        const orderPriceRole = computed(() =>
+            (orderPriceSpec.value && orderPriceSpec.value.price_role) || 'none');
+        const orderNeedsPrice = computed(() => orderPriceRole.value === 'order');
+        const orderAcceptsPrice = computed(() => orderPriceRole.value !== 'none');
+        const orderPriceLabel = computed(() =>
+            orderPriceRole.value === 'protect' ? '保护限价（选填）' : '委托价');
+        const orderPriceHint = computed(() => {
+            const spec = orderPriceSpec.value;
+            if (!spec) return '';
+            if (orderPriceRole.value === 'protect') {
+                return `${spec.hint || ''}${spec.hint ? '；' : ''}保护限价留空则按涨跌停价保护`;
+            }
+            return spec.hint || '';
+        });
+
+        // 当前方向的价格笼子。取不到就是 null，界面上显示「—」而不是编一个范围。
+        const orderCage = computed(() => {
+            const cage = orderQuote.value && orderQuote.value.price_cage;
+            if (!cage) return null;
+            return cage[orderQuoteSide.value] || cage.buy || null;
+        });
+
+        const orderCageText = computed(() => {
+            const cage = orderCage.value;
+            if (!cage) return '';
+            if (cage.low === null || cage.high === null) {
+                return cage.reason || '价格笼子不可用';
+            }
+            const label = { auction: '集合竞价', continuous: '连续竞价', closed: '非交易时段' }[cage.session] || cage.session;
+            const decimals = (orderQuote.value && orderQuote.value.price_decimals) || 2;
+            return `${label} · 有效申报 ${cage.low.toFixed(decimals)} ~ ${cage.high.toFixed(decimals)}`
+                 + `（基准 ${Number(cage.base_price).toFixed(decimals)} ±${(cage.band * 100).toFixed(0)}%）`;
+        });
+
+        // 限价是否落在笼子里。服务端还会再判一次，这里只是别让用户白填一次。
+        // 只管 order 语义的价：市价指令的保护限价不走笼子，交易所自己按对手价成交。
+        const orderPriceError = computed(() => {
+            if (!orderNeedsPrice.value) return '';
+            const price = Number(orderLimitPrice.value);
+            if (!price || price <= 0) return '限价委托必须填价格';
+            const cage = orderCage.value;
+            if (!cage || cage.low === null || cage.high === null) return '';
+            const decimals = (orderQuote.value && orderQuote.value.price_decimals) || 2;
+            if (price < cage.low) return `低于有效申报下限 ${cage.low.toFixed(decimals)}`;
+            if (price > cage.high) return `高于有效申报上限 ${cage.high.toFixed(decimals)}`;
+            return '';
+        });
+
+        // 换报价方式时给一个合理的默认价：
+        //   限价 —— 填最新价，用户至少有个合法起点
+        //   保护限价 —— 留 0，即「按涨跌停价保护」。这里不能沿用最新价：
+        //               市价单挂着一个最新价的保护限价，行情一动就成不了。
+        watch(orderPriceRole, (role) => {
+            if (role === 'protect') {
+                orderLimitPrice.value = 0;
+            } else if (role === 'order' && !Number(orderLimitPrice.value)) {
+                orderLimitPrice.value = (orderQuote.value && orderQuote.value.last_price) || 0;
+            }
+        });
+
+        // 附加到下单请求上的报价参数
+        const orderPricingPayload = () => ({
+            price_type: orderPriceType.value,
+            price: orderAcceptsPrice.value ? Number(orderLimitPrice.value) || 0 : 0,
+            trade_mode: orderTradeMode.value || '',
+        });
+
+        const orderPriceStep = computed(() =>
+            (orderQuote.value && orderQuote.value.price_tick) || 0.01);
+
         // 品种规则：与后端 bridge/instruments.py 保持一致。
         // 放在前端是为了让数量步进和小数位跟着选中的标的立刻变，不必每次按键打一次接口。
         // 真正的校验仍在服务端 —— 这里只是别让用户填出一个注定被拒的数。
@@ -315,6 +490,7 @@ const app = createApp({
         watch(newBuySelectedStock, (stock) => {
             const spec = instrumentSpec(stock && stock.ts_code);
             if (newBuyAmount.value < spec.min) newBuyAmount.value = spec.min;
+            loadOrderQuote(stock && stock.ts_code, 'buy');
         });
 
         // 按金额模式下，实际会报出去的数量
@@ -2622,6 +2798,8 @@ const app = createApp({
 
         // 打开卖出对话框
         const openSellPositionDialog = (row) => {
+            resetOrderPricing(row && row.stock_code, 'sell',
+                              (row && row.account_id) || currentAccountId.value);
             if (!isAuthenticated.value) return;
             sellPositionStock.value = row;
             sellPositionPercentage.value = 100;
@@ -2630,11 +2808,58 @@ const app = createApp({
 
         // 打开买入对话框
         const openBuyPositionDialog = (row) => {
+            resetOrderPricing(row && row.stock_code, 'buy',
+                              (row && row.account_id) || currentAccountId.value);
             if (!isAuthenticated.value) return;
             buyPositionStock.value = row;
             buyPositionPercentage.value = 100;
             showBuyPositionDialog.value = true;
         };
+
+        // 撤单。委托号是 order_id，服务端据此调 cancel_order_stock。
+        const cancelPendingOrder = async (row) => {
+            if (!row || !row.cancelable) return;
+            const key = `${row.account_id}|${row.order_id}`;
+            if (cancellingOrders.value.has(key)) return;
+            try {
+                await ElementPlus.ElMessageBox.confirm(
+                    `撤销 ${row.side_label} ${row.stock_name || row.stock_code} `
+                    + `${row.left_volume}${row.unit}（委托号 ${row.order_sysid || row.order_id}）？`,
+                    '撤单确认', { type: 'warning', confirmButtonText: '撤单', cancelButtonText: '取消' });
+            } catch (e) {
+                return;   // 用户点了取消
+            }
+            cancellingOrders.value = new Set(cancellingOrders.value).add(key);
+            try {
+                const response = await fetch('/api/orders/cancel', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${accessToken.value}`
+                    },
+                    body: JSON.stringify({
+                        account_id: row.account_id,
+                        order_id: String(row.order_id)
+                    })
+                });
+                const result = await response.json().catch(() => ({}));
+                if (response.ok) {
+                    ElementPlus.ElMessage.success(result.message || '撤单已提交');
+                    loadTradeFlow(true);
+                } else {
+                    ElementPlus.ElMessage.error(result.detail || '撤单失败');
+                }
+            } catch (e) {
+                ElementPlus.ElMessage.error('撤单请求出错');
+            } finally {
+                const next = new Set(cancellingOrders.value);
+                next.delete(key);
+                cancellingOrders.value = next;
+            }
+        };
+
+        const isCancelling = (row) =>
+            cancellingOrders.value.has(`${row.account_id}|${row.order_id}`);
 
         // 下单结果提示：单笔带委托号，批量带成功/失败笔数。
         // 改造前接口只回「已下发，等客户端执行」，成没成要等下一次同步才知道。
@@ -2656,6 +2881,7 @@ const app = createApp({
             newBuyStockOptions.value = [];
             newBuySelectedStock.value = null;
             newBuyAmount.value = 100;
+            resetOrderPricing(null, 'buy', currentAccountId.value);
             newBuyMode.value = 'volume';
             newBuyCash.value = 10000;
             newBuyQuote.value = null;
@@ -2693,6 +2919,10 @@ const app = createApp({
                 ElementPlus.ElMessage.warning('请先选择股票');
                 return;
             }
+            if (orderPriceError.value) {
+                ElementPlus.ElMessage.warning(orderPriceError.value);
+                return;
+            }
             const spec = newBuySpec.value;
             if (newBuyMode.value === 'cash') {
                 if (!newBuyCash.value || newBuyCash.value <= 0) {
@@ -2717,7 +2947,8 @@ const app = createApp({
                 const payload = {
                     account_id: currentAccountId.value,
                     stock_code: newBuySelectedStock.value.ts_code,
-                    stock_name: newBuySelectedStock.value.name
+                    stock_name: newBuySelectedStock.value.name,
+                    ...orderPricingPayload()
                 };
                 // 按金额下单交给服务端换算：它有实时价，也有品种规整规则
                 if (newBuyMode.value === 'cash') {
@@ -2796,6 +3027,7 @@ const app = createApp({
                     const records = data.records || [];
                     maybeNotifyNewTrades(records);   // 有新成交时弹浏览器通知
                     tradeFlowRecords.value = records;
+                    tradeFlowPending.value = data.pending || [];
                     tradeFlowSummary.value = data.summary || {};
                 }
             } catch (e) {
@@ -2903,7 +3135,8 @@ const app = createApp({
                     body: JSON.stringify({
                         account_id: currentAccountId.value,
                         stock_code: row.stock_code,
-                        percentage: sellPositionPercentage.value
+                        percentage: sellPositionPercentage.value,
+                        ...orderPricingPayload()
                     })
                 });
 
@@ -2955,7 +3188,8 @@ const app = createApp({
                     body: JSON.stringify({
                         account_id: currentAccountId.value,
                         stock_code: row.stock_code,
-                        percentage: buyPositionPercentage.value
+                        percentage: buyPositionPercentage.value,
+                        ...orderPricingPayload()
                     })
                 });
 
@@ -4152,6 +4386,29 @@ const app = createApp({
             deleteResearchBoardRecord,
             analyzeResearchBoardKline,
             tradeFlowRecords,
+            tradeFlowPending,
+            cancelPendingOrder,
+            isCancelling,
+            orderPriceType,
+            orderLimitPrice,
+            orderQuote,
+            orderQuoteLoading,
+            orderTradeMode,
+            orderTradeModes,
+            orderTradeModeVisible,
+            orderTradeModeHint,
+            orderPriceTypes,
+            orderPriceTypeGroups,
+            orderPriceSpec,
+            orderPriceRole,
+            orderNeedsPrice,
+            orderAcceptsPrice,
+            orderPriceLabel,
+            orderPriceHint,
+            orderCage,
+            orderCageText,
+            orderPriceError,
+            orderPriceStep,
             tradeFlowSummary,
             tradeFlowLoading,
             tradeFlowSide,

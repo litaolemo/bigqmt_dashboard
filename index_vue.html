@@ -1298,7 +1298,69 @@
                                 <el-button size="small" @click="loadTradeFlow(false)" :loading="tradeFlowLoading">刷新</el-button>
                             </div>
                         </div>
-                        <div style="padding: 0 10px;">
+                        <div v-if="tradeFlowPending.length" style="padding: 0 10px 6px 10px;">
+                    <div style="display: flex; align-items: center; gap: 8px; padding: 10px 4px 6px 4px;">
+                        <span style="font-weight: 700; font-size: 13px;">未成交委托</span>
+                        <el-tag size="small" type="warning" effect="plain">{{ tradeFlowPending.length }}</el-tag>
+                        <span style="color: var(--text-secondary); font-size: 12px;">
+                            下单到成交之间的状态，成交流水里看不到
+                        </span>
+                    </div>
+                    <el-table :data="tradeFlowPending" size="small" style="width: 100%;" max-height="30vh">
+                        <el-table-column prop="stock_name" label="名称" min-width="110" fixed>
+                            <template #default="{ row }">
+                                <span style="font-weight: bold; color: #fff;">{{ row.stock_name || '--' }}</span>
+                                <el-tag v-if="row.is_bond" size="small" type="warning" effect="plain" style="margin-left: 6px; height: 17px; line-height: 15px; padding: 0 4px;">转债</el-tag>
+                                <div style="font-size: 11px; color: var(--text-secondary); font-family: monospace;">{{ row.stock_code }}</div>
+                            </template>
+                        </el-table-column>
+                        <el-table-column prop="ordered_at" label="委托时间" width="150" show-overflow-tooltip>
+                            <template #default="{ row }">
+                                <span style="font-family: 'Share Tech Mono', monospace; color: var(--text-secondary);">{{ row.ordered_at || '--' }}</span>
+                            </template>
+                        </el-table-column>
+                        <el-table-column prop="side" label="方向" width="66" align="center">
+                            <template #default="{ row }">
+                                <span :class="row.side === 'buy' ? 'profit' : 'loss'" style="font-weight: 800;">{{ row.side_label }}</span>
+                            </template>
+                        </el-table-column>
+                        <el-table-column prop="status" label="状态" width="84" align="center">
+                            <template #default="{ row }">
+                                <el-tag size="small" :type="row.status === '部成' ? 'warning' : 'info'" effect="plain">{{ row.status }}</el-tag>
+                            </template>
+                        </el-table-column>
+                        <el-table-column prop="price" label="委托价" width="92" align="right">
+                            <template #default="{ row }">{{ row.price ? row.price.toFixed(row.is_bond ? 3 : 2) : '市价' }}</template>
+                        </el-table-column>
+                        <el-table-column prop="volume" label="委托量" width="90" align="right">
+                            <template #default="{ row }">{{ row.volume }} <span style="color: var(--text-secondary); font-size: 11px;">{{ row.unit }}</span></template>
+                        </el-table-column>
+                        <el-table-column prop="traded_volume" label="已成" width="80" align="right">
+                            <template #default="{ row }">{{ row.traded_volume }}</template>
+                        </el-table-column>
+                        <el-table-column prop="left_volume" label="剩余" width="80" align="right">
+                            <template #default="{ row }">
+                                <span style="font-weight: 700;">{{ row.left_volume }}</span>
+                            </template>
+                        </el-table-column>
+                        <el-table-column prop="account_alias" label="账号" width="100" show-overflow-tooltip>
+                            <template #default="{ row }">
+                                <span style="color: var(--text-secondary);">{{ row.account_alias }}</span>
+                            </template>
+                        </el-table-column>
+                        <el-table-column label="操作" width="86" align="center" fixed="right">
+                            <template #default="{ row }">
+                                <el-button v-if="row.cancelable" size="small" type="danger" plain
+                                           :loading="isCancelling(row)"
+                                           @click="cancelPendingOrder(row)">撤单</el-button>
+                                <el-tooltip v-else :content="row.status_msg || (row.status + '，不可撤')">
+                                    <span style="color: var(--text-secondary); font-size: 12px;">—</span>
+                                </el-tooltip>
+                            </template>
+                        </el-table-column>
+                    </el-table>
+                </div>
+                <div style="padding: 0 10px;">
                             <el-table :data="tradeFlowRecords" size="small" style="width: 100%;" max-height="56vh"
                                       empty-text="所选区间内没有成交" v-loading="tradeFlowLoading">
                                 <el-table-column prop="traded_at" label="成交时间" width="150" sortable show-overflow-tooltip>
@@ -2452,8 +2514,59 @@
                     </div>
                     <el-slider v-model="sellPositionPercentage" :step="10" show-stops></el-slider>
                 </div>
+                <div style="margin-bottom: 16px; padding: 10px 12px; border-radius: 6px;
+                            background: rgba(255,255,255,0.03);">
+                    <div v-if="orderTradeModeVisible"
+                         style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+                        <span style="color: var(--text-secondary); font-size: 13px; white-space: nowrap;">交易类型</span>
+                        <el-select v-model="orderTradeMode" size="small" style="flex: 1;">
+                            <el-option v-for="m in orderTradeModes" :key="m.value"
+                                       :label="m.side_label" :value="m.value">
+                                <span>{{ m.side_label }}</span>
+                                <span style="float: right; margin-left: 16px; font-size: 12px;
+                                             color: var(--text-secondary);">{{ m.hint }}</span>
+                            </el-option>
+                        </el-select>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+                        <span style="color: var(--text-secondary); font-size: 13px; white-space: nowrap;">报价方式</span>
+                        <el-select v-model="orderPriceType" size="small" style="flex: 1;">
+                            <el-option-group v-for="g in orderPriceTypeGroups" :key="g.label" :label="g.label">
+                                <el-option v-for="t in g.items" :key="t.value"
+                                           :label="t.label" :value="t.value">
+                                    <span>{{ t.label }}</span>
+                                    <span style="float: right; margin-left: 16px; font-size: 12px;
+                                                 color: var(--text-secondary);">{{ t.hint }}</span>
+                                </el-option>
+                            </el-option-group>
+                        </el-select>
+                    </div>
+                    <div v-if="orderAcceptsPrice"
+                         style="display: flex; align-items: center; gap: 10px;">
+                        <span style="color: var(--text-secondary); font-size: 13px; white-space: nowrap;">{{ orderPriceLabel }}</span>
+                        <el-input-number v-model="orderLimitPrice"
+                                         :step="orderPriceStep"
+                                         :precision="orderQuote ? orderQuote.price_decimals : 2"
+                                         :min="0"
+                                         size="small"
+                                         style="flex: 1;"
+                                         controls-position="right" />
+                    </div>
+                    <div style="font-size: 12px; line-height: 1.8; margin-top: 6px;">
+                        <div v-if="orderPriceHint" style="color: var(--text-secondary);">{{ orderPriceHint }}</div>
+                        <div v-if="orderNeedsPrice" style="color: var(--text-secondary);">
+                            <span v-if="orderQuoteLoading">价格笼子计算中…</span>
+                            <span v-else-if="orderCageText">{{ orderCageText }}</span>
+                            <span v-else>价格笼子不可用</span>
+                        </div>
+                        <div v-if="orderPriceError" style="color: var(--danger-color, #f56c6c); font-weight: bold;">
+                            {{ orderPriceError }}
+                        </div>
+                    </div>
+                </div>
                 <p style="color: var(--text-secondary); line-height: 1.6; font-size: 12px;">
-                    点击确认后，下次同步持仓时将下发卖出指令。客户端执行后会自动清除卖出状态。
+                    点击确认后<b>立即报单到大QMT</b>，返回真实委托号。未成交的委托会出现在下方
+                    「买卖流水」里，可以在那里撤单。
                 </p>
             </div>
             <template #footer>
@@ -2495,8 +2608,59 @@
                         100% = 当前持仓 {{ buyPositionStock ? buyPositionStock.volume : 0 }}，按品种步进取整
                     </div>
                 </div>
+                <div style="margin-bottom: 16px; padding: 10px 12px; border-radius: 6px;
+                            background: rgba(255,255,255,0.03);">
+                    <div v-if="orderTradeModeVisible"
+                         style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+                        <span style="color: var(--text-secondary); font-size: 13px; white-space: nowrap;">交易类型</span>
+                        <el-select v-model="orderTradeMode" size="small" style="flex: 1;">
+                            <el-option v-for="m in orderTradeModes" :key="m.value"
+                                       :label="m.side_label" :value="m.value">
+                                <span>{{ m.side_label }}</span>
+                                <span style="float: right; margin-left: 16px; font-size: 12px;
+                                             color: var(--text-secondary);">{{ m.hint }}</span>
+                            </el-option>
+                        </el-select>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+                        <span style="color: var(--text-secondary); font-size: 13px; white-space: nowrap;">报价方式</span>
+                        <el-select v-model="orderPriceType" size="small" style="flex: 1;">
+                            <el-option-group v-for="g in orderPriceTypeGroups" :key="g.label" :label="g.label">
+                                <el-option v-for="t in g.items" :key="t.value"
+                                           :label="t.label" :value="t.value">
+                                    <span>{{ t.label }}</span>
+                                    <span style="float: right; margin-left: 16px; font-size: 12px;
+                                                 color: var(--text-secondary);">{{ t.hint }}</span>
+                                </el-option>
+                            </el-option-group>
+                        </el-select>
+                    </div>
+                    <div v-if="orderAcceptsPrice"
+                         style="display: flex; align-items: center; gap: 10px;">
+                        <span style="color: var(--text-secondary); font-size: 13px; white-space: nowrap;">{{ orderPriceLabel }}</span>
+                        <el-input-number v-model="orderLimitPrice"
+                                         :step="orderPriceStep"
+                                         :precision="orderQuote ? orderQuote.price_decimals : 2"
+                                         :min="0"
+                                         size="small"
+                                         style="flex: 1;"
+                                         controls-position="right" />
+                    </div>
+                    <div style="font-size: 12px; line-height: 1.8; margin-top: 6px;">
+                        <div v-if="orderPriceHint" style="color: var(--text-secondary);">{{ orderPriceHint }}</div>
+                        <div v-if="orderNeedsPrice" style="color: var(--text-secondary);">
+                            <span v-if="orderQuoteLoading">价格笼子计算中…</span>
+                            <span v-else-if="orderCageText">{{ orderCageText }}</span>
+                            <span v-else>价格笼子不可用</span>
+                        </div>
+                        <div v-if="orderPriceError" style="color: var(--danger-color, #f56c6c); font-weight: bold;">
+                            {{ orderPriceError }}
+                        </div>
+                    </div>
+                </div>
                 <p style="color: var(--text-secondary); line-height: 1.6; font-size: 12px;">
-                    点击确认后<b>立即报单到大QMT</b>，返回真实委托号。
+                    点击确认后<b>立即报单到大QMT</b>，返回真实委托号。未成交的委托会出现在下方
+                    「买卖流水」里，可以在那里撤单。
                 </p>
             </div>
             <template #footer>
@@ -2598,6 +2762,56 @@
                     </div>
                 </div>
 
+                <div style="margin-bottom: 16px; padding: 10px 12px; border-radius: 6px;
+                            background: rgba(255,255,255,0.03);">
+                    <div v-if="orderTradeModeVisible"
+                         style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+                        <span style="color: var(--text-secondary); font-size: 13px; white-space: nowrap;">交易类型</span>
+                        <el-select v-model="orderTradeMode" size="small" style="flex: 1;">
+                            <el-option v-for="m in orderTradeModes" :key="m.value"
+                                       :label="m.side_label" :value="m.value">
+                                <span>{{ m.side_label }}</span>
+                                <span style="float: right; margin-left: 16px; font-size: 12px;
+                                             color: var(--text-secondary);">{{ m.hint }}</span>
+                            </el-option>
+                        </el-select>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+                        <span style="color: var(--text-secondary); font-size: 13px; white-space: nowrap;">报价方式</span>
+                        <el-select v-model="orderPriceType" size="small" style="flex: 1;">
+                            <el-option-group v-for="g in orderPriceTypeGroups" :key="g.label" :label="g.label">
+                                <el-option v-for="t in g.items" :key="t.value"
+                                           :label="t.label" :value="t.value">
+                                    <span>{{ t.label }}</span>
+                                    <span style="float: right; margin-left: 16px; font-size: 12px;
+                                                 color: var(--text-secondary);">{{ t.hint }}</span>
+                                </el-option>
+                            </el-option-group>
+                        </el-select>
+                    </div>
+                    <div v-if="orderAcceptsPrice"
+                         style="display: flex; align-items: center; gap: 10px;">
+                        <span style="color: var(--text-secondary); font-size: 13px; white-space: nowrap;">{{ orderPriceLabel }}</span>
+                        <el-input-number v-model="orderLimitPrice"
+                                         :step="orderPriceStep"
+                                         :precision="orderQuote ? orderQuote.price_decimals : 2"
+                                         :min="0"
+                                         size="small"
+                                         style="flex: 1;"
+                                         controls-position="right" />
+                    </div>
+                    <div style="font-size: 12px; line-height: 1.8; margin-top: 6px;">
+                        <div v-if="orderPriceHint" style="color: var(--text-secondary);">{{ orderPriceHint }}</div>
+                        <div v-if="orderNeedsPrice" style="color: var(--text-secondary);">
+                            <span v-if="orderQuoteLoading">价格笼子计算中…</span>
+                            <span v-else-if="orderCageText">{{ orderCageText }}</span>
+                            <span v-else>价格笼子不可用</span>
+                        </div>
+                        <div v-if="orderPriceError" style="color: var(--danger-color, #f56c6c); font-weight: bold;">
+                            {{ orderPriceError }}
+                        </div>
+                    </div>
+                </div>
                 <p style="color: var(--text-secondary); line-height: 1.6; font-size: 12px;">
                     点击确认后<b>立即报单到大QMT</b>，返回真实委托号。数量与金额的换算由服务端完成，
                     和实际报单量一致。若被服务端风控拦下会直接提示原因。

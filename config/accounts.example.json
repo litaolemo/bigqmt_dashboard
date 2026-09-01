@@ -7,6 +7,7 @@
       "alias": "主号",
       "enabled": true,
       "account_type": "STOCK",
+      "_account_type": "STOCK 买卖发 passorder 23/24；CREDIT 发 33/34（担保品买卖）。填错会发出一笔业务类型不对的真单。",
       "allow_order": false,
       "timeout_seconds": 6.0,
       "poll_seconds": 4.0,

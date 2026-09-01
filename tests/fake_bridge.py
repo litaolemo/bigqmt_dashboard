@@ -28,6 +28,7 @@ class FakeConstants:
     FIX_PRICE = 11
     LATEST_PRICE = 5
     MARKET_PEER_PRICE_FIRST = 44
+    MARKET_MINE_PRICE_FIRST = 45
 
     class XtQuantTraderCallback:
         pass
@@ -103,9 +104,11 @@ class FakeOrder:
 class FakeBridge:
     """上下文管理器：进入时替换 bridge.pool 的出口，退出时还原。"""
 
-    def __init__(self, account_ids, allow_order=True):
+    def __init__(self, account_ids, allow_order=True, account_type="STOCK"):
         self.account_ids = list(account_ids)
         self.allow_order_flag = allow_order
+        # 账户类型决定买卖指令用哪个 opType（普通 23/24，信用 33/34）
+        self.account_type = account_type
         self.orders = []
         self.traders = {aid: FakeTrader(aid, self.orders) for aid in self.account_ids}
         self._saved = {}
@@ -119,6 +122,7 @@ class FakeBridge:
             "get_account_ref": bridge_pool.get_account_ref,
             "allow_order": bridge_pool.allow_order,
             "_compat": bridge_pool._compat,
+            "account_type_of": bridge_pool.account_type_of,
             "account_ids": bridge_config.account_ids,
             "list_accounts": bridge_config.list_accounts,
         }
@@ -134,6 +138,7 @@ class FakeBridge:
         bridge_pool.allow_order = lambda aid: (
             self.allow_order_flag and str(aid) in self.traders)
         bridge_pool._compat = lambda: FakeConstants
+        bridge_pool.account_type_of = lambda aid: self.account_type
         bridge_config.account_ids = lambda enabled_only=True: list(self.account_ids)
         bridge_config.list_accounts = lambda enabled_only=True: []
         return self
@@ -143,6 +148,7 @@ class FakeBridge:
         bridge_pool.get_account_ref = self._saved["get_account_ref"]
         bridge_pool.allow_order = self._saved["allow_order"]
         bridge_pool._compat = self._saved["_compat"]
+        bridge_pool.account_type_of = self._saved["account_type_of"]
         bridge_config.account_ids = self._saved["account_ids"]
         bridge_config.list_accounts = self._saved["list_accounts"]
         return False

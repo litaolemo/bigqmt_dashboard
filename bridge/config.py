@@ -48,6 +48,7 @@ class AccountConfig:
             "account_id": self.account_id,
             "alias": self.alias,
             "enabled": self.enabled,
+            "account_type": self.account_type,
             "allow_order": self.allow_order,
             "transport": self.transport,
             "host": self.rpc.get("host", ""),
