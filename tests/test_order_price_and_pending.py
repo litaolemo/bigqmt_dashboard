@@ -266,17 +266,19 @@ class TradeModeTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200, response.text)
             self.assertEqual(bridge.orders[0]["order_type"], 24)
 
-    def test_credit_account_defaults_to_the_collateral_op_types(self):
+    def test_credit_account_defaults_to_the_plain_op_types(self):
+        # 担保品（33/34）暂不支持，信用账户的默认也是普通买卖。
+        # 关键是默认不能是会产生负债的融资买入。
         with FakeBridge([self.account], account_type="CREDIT") as bridge:
             self.assertEqual(self._buy(bridge).status_code, 200)
-            self.assertEqual(bridge.orders[0]["order_type"], 33, "担保品买入是 33 不是 23")
+            self.assertEqual(bridge.orders[0]["order_type"], 23)
 
             bridge.trader(self.account).positions["600000.SH"] = FakePosition("600000.SH", 1000)
             bridge.orders[:] = []
             response = self.client.post("/api/position/sell", json={
                 "account_id": self.account, "stock_code": "600000.SH", "percentage": 100})
             self.assertEqual(response.status_code, 200, response.text)
-            self.assertEqual(bridge.orders[0]["order_type"], 34)
+            self.assertEqual(bridge.orders[0]["order_type"], 24)
 
     def test_margin_mode_is_explicit_never_the_default(self):
         with FakeBridge([self.account], account_type="CREDIT") as bridge:
@@ -301,9 +303,9 @@ class TradeModeTests(unittest.TestCase):
             body = self.client.get(
                 "/api/instrument/600000.SH?account_id=%s" % self.account).json()["instrument"]
             self.assertEqual(body["account_type"], "CREDIT")
-            self.assertEqual(body["default_trade_mode"], "collateral")
+            self.assertEqual(body["default_trade_mode"], "normal")
             self.assertEqual([m["value"] for m in body["trade_modes"]],
-                             ["normal", "collateral", "margin", "repay"])
+                             ["normal", "margin", "repay"])
 
     def test_instrument_endpoint_without_an_account_assumes_a_plain_one(self):
         with FakeBridge([self.account]):

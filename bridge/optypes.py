@@ -3,26 +3,22 @@
 
 opType 决定的不只是买还是卖，而是「这一笔到底是什么业务」：
 
-    普通账户   23 买入            24 卖出
-    信用账户   33 担保品买入      34 担保品卖出
-               27 融资买入        28 融券卖出
-               29 买券还券        31 卖券还款
+    23 买入        24 卖出        股票 / ETF / 可转债
+    27 融资买入    28 融券卖出    信用账户，产生负债
+    29 买券还券    31 卖券还款    信用账户，还账
 
-同一个「买」在普通账户和信用账户上是两条不同的指令。把信用账户的担保品买入当成
-23 发出去，交易所收到的是一笔真实但业务类型不同的单 —— 和 xtquant_big_convert
-issue #103（融资买入被映射成普通买入）是同一类错误，比直接报错更糟。
+把融资买入当成普通买入发出去，交易所收到的是一笔真实但业务类型不同的单
+（xtquant_big_convert issue #103），比直接报错糟得多。所以这里不猜：
+认不出的 trade_mode 一律报错。
 
 出处：https://dict.thinktrader.net/innerApi/enum_constants.html?id=NF25nX
 （docs/BIGQMT_INNER_PYTHON_API_REFERENCE.md 10.1 节是抄录）
 
-**关于送给桥接层的数值。** xtquant_big_convert 的入参约定是混的：融资融券类走
-xtconstant 的 order_type（27/28/29/31，桥接层再翻成同名 opType），期货和 ETF
-期权类直接透传 passorder 的 opType。担保品买卖在 xtconstant 里没有独立值
-（CREDIT_BUY == STOCK_BUY == 23），所以只能按期货那条路走 —— 直接送 33/34。
+**担保品买卖（33 / 34）暂不支持。** 它在 xtconstant 里没有独立值
+（CREDIT_BUY == STOCK_BUY == 23），要支持得先改 xtquant_big_convert，
+让它能直接透传 33/34。在那之前宁可不给这个选项 —— 给了只会退化成普通买入。
 
-好处是失败方式安全：QMT 里部署的桥接层若还不认 33/34，会明确报
-「order_type 33 is not recognised by the package deployed in QMT」而拒单，
-不会悄悄发出一笔普通买入。
+现在这张表里的每一条都是当前桥接层已经认得的。
 """
 
 ACCOUNT_STOCK = "STOCK"
@@ -30,12 +26,8 @@ ACCOUNT_CREDIT = "CREDIT"
 
 # (key, 名称, 适用账户类型, 买入 order_type, 卖出 order_type, 买入名, 卖出名, 说明)
 _TABLE = (
-    # 普通买卖两种账户都给 —— 23/24 本身是合法的 opType，信用账户能不能用
-    # 看券商。信用账户的**默认**仍是担保品，但不把普通买卖从列表里拿掉。
     ("normal", "普通买卖", (ACCOUNT_STOCK, ACCOUNT_CREDIT), 23, 24, "买入", "卖出",
      "股票 / ETF / 可转债的普通买卖"),
-    ("collateral", "担保品买卖", (ACCOUNT_CREDIT,), 33, 34, "担保品买入", "担保品卖出",
-     "信用账户用自有资金买卖，不产生负债"),
     ("margin", "融资融券", (ACCOUNT_CREDIT,), 27, 28, "融资买入", "融券卖出",
      "借钱买 / 借券卖，产生负债"),
     ("repay", "还券还款", (ACCOUNT_CREDIT,), 29, 31, "买券还券", "卖券还款",
@@ -44,9 +36,9 @@ _TABLE = (
 
 BY_KEY = {row[0]: row for row in _TABLE}
 
-# 账户类型没配或配了个不认识的值时按普通账户走 —— 绝大多数是普通账户，
-# 而且普通账户发 23/24 是对的。信用账户必须显式配 CREDIT。
-DEFAULT_MODE = {ACCOUNT_STOCK: "normal", ACCOUNT_CREDIT: "collateral"}
+# 两种账户的默认都是普通买卖：默认不能是会产生负债的那一条。
+# 账户类型没配或配了个不认识的值时按普通账户走，信用账户必须显式配 CREDIT。
+DEFAULT_MODE = {ACCOUNT_STOCK: "normal", ACCOUNT_CREDIT: "normal"}
 
 SIDE_BUY = "buy"
 SIDE_SELL = "sell"

@@ -7,7 +7,7 @@
       "alias": "主号",
       "enabled": true,
       "account_type": "STOCK",
-      "_account_type": "STOCK 买卖发 passorder 23/24；CREDIT 发 33/34（担保品买卖）。填错会发出一笔业务类型不对的真单。",
+      "_account_type": "STOCK 或 CREDIT。决定下单弹窗能选哪些买卖指令：CREDIT 多出融资买入(27)/融券卖出(28)、买券还券(29)/卖券还款(31)，默认仍是不产生负债的普通买卖(23/24)。",
       "allow_order": false,
       "timeout_seconds": 6.0,
       "poll_seconds": 4.0,

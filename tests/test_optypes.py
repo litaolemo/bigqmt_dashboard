@@ -4,8 +4,10 @@
 数值出自迅投官方枚举：
 https://dict.thinktrader.net/innerApi/enum_constants.html?id=NF25nX
 
-这里的错法很贵：信用账户的「买」用 23 发出去，交易所收到的是一笔真实但业务类型
-不同的单（普通买入而非担保品买入），比直接报错糟得多。
+这里的错法很贵：把融资买入当成普通买入发出去，交易所收到的是一笔真实但
+业务类型不同的单，比直接报错糟得多。
+
+担保品买卖（33/34）暂不在表里 —— 桥接层还不能透传，给了只会退化成普通买入。
 """
 
 import sys
@@ -23,7 +25,6 @@ class OfficialValueTests(unittest.TestCase):
         expected = {
             #  key           买   卖
             "normal":       (23, 24),   # 股票/ETF/可转债
-            "collateral":   (33, 34),   # 担保品买入 / 担保品卖出
             "margin":       (27, 28),   # 融资买入 / 融券卖出
             "repay":        (29, 31),   # 买券还券 / 卖券还款
         }
@@ -42,15 +43,20 @@ class AccountTypeTests(unittest.TestCase):
         self.assertEqual([c["value"] for c in optypes.choices_for("STOCK")], ["normal"])
 
     def test_credit_account_gets_the_credit_modes_plus_the_plain_one(self):
-        # 普通买卖不从列表里拿掉：23/24 本身是合法 opType，
-        # 信用账户能不能用看券商，不该由面板替他决定。
         self.assertEqual([c["value"] for c in optypes.choices_for("CREDIT")],
-                         ["normal", "collateral", "margin", "repay"])
+                         ["normal", "margin", "repay"])
+
+    def test_collateral_is_not_offered_yet(self):
+        # 桥接层还不能透传 33/34，给了这个选项只会退化成普通买入
+        self.assertNotIn("collateral", optypes.BY_KEY)
+        for row in optypes._TABLE:
+            self.assertNotIn(row[3], (33, 34), row[0])
+            self.assertNotIn(row[4], (33, 34), row[0])
 
     def test_defaults_are_the_non_leveraged_ones(self):
         # 默认绝不能是融资买入：默认值应该是不产生负债的那条
         self.assertEqual(optypes.default_mode_for("STOCK"), "normal")
-        self.assertEqual(optypes.default_mode_for("CREDIT"), "collateral")
+        self.assertEqual(optypes.default_mode_for("CREDIT"), "normal")
 
     def test_unknown_account_type_falls_back_to_stock(self):
         # 账户类型没配/配错时按普通账户走：绝大多数是普通账户，且 23/24 对它是对的
@@ -67,8 +73,8 @@ class ResolveTests(unittest.TestCase):
     def test_empty_mode_takes_the_account_default(self):
         self.assertEqual(optypes.resolve("", "STOCK", "buy")[0], 23)
         self.assertEqual(optypes.resolve("", "STOCK", "sell")[0], 24)
-        self.assertEqual(optypes.resolve(None, "CREDIT", "buy")[0], 33)
-        self.assertEqual(optypes.resolve(None, "CREDIT", "sell")[0], 34)
+        self.assertEqual(optypes.resolve(None, "CREDIT", "buy")[0], 23)
+        self.assertEqual(optypes.resolve(None, "CREDIT", "sell")[0], 24)
 
     def test_credit_modes_resolve_to_their_own_op_types(self):
         self.assertEqual(optypes.resolve("margin", "CREDIT", "buy")[0], 27)
@@ -106,7 +112,7 @@ class ResolveTests(unittest.TestCase):
             self.assertEqual(choice["side_label"], choice["sell_label"])
 
     def test_side_label_follows_the_direction(self):
-        self.assertEqual(optypes.resolve("", "CREDIT", "buy")[1]["side_label"], "担保品买入")
+        self.assertEqual(optypes.resolve("", "CREDIT", "buy")[1]["side_label"], "买入")
         self.assertEqual(optypes.resolve("margin", "CREDIT", "sell")[1]["side_label"], "融券卖出")
 
 
