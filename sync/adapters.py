@@ -118,7 +118,11 @@ def trade_to_row(trade, account_id, name_of=None):
         "order_sysid": str(_get(trade, "order_sysid", "")),
         "order_remark": str(_get(trade, "order_remark", "")),
         "strategy_name": str(_get(trade, "strategy_name", "")),
-        "traded_id": str(_get(trade, "traded_id", _get(trade, "trade_id", ""))),
+        # 缺失时给 None 不给 ""：traded_id 是 (account_id, traded_id) 的唯一键
+        # 一部分，"" 会让所有取不到编号的成交互相顶掉，NULL 在 SQLite 里互不
+        # 冲突，才是「不知道」该有的样子。
+        "traded_id": (str(_get(trade, "traded_id", _get(trade, "trade_id", "")))
+                      or None),
         "traded_price": _f(_get(trade, "traded_price")),
         "traded_volume": _i(_get(trade, "traded_volume")),
         "traded_amount": _f(_get(trade, "traded_amount")),

@@ -151,5 +151,99 @@ class TradeFlowTests(unittest.TestCase):
         self.assertTrue(all(r["volume"] > 0 and r["amount"] > 0 for r in records))
 
 
+class PartialFillTests(unittest.TestCase):
+    """一笔委托分多笔成交时，每一笔都要留得住。
+
+    GitHub issue #1：旧的 UNIQUE(order_id, order_sysid) 把同一委托的所有分笔
+    成交当成同一行反复覆盖，只留下最后一笔。save_trades() 现在应该按
+    (account_id, traded_id) 去重——那才是真正逐笔不同的字段。
+    """
+
+    account = "partial-fill-test"
+
+    def setUp(self):
+        self._clean()
+
+    def tearDown(self):
+        self._clean()
+
+    def _clean(self):
+        conn = app_module.get_db_connection()
+        conn.execute("DELETE FROM trades WHERE account_id = ?", (self.account,))
+        conn.commit()
+        conn.close()
+
+    def _fills(self):
+        # 同一笔委托（同 order_id / order_sysid），分三笔成交，只有 traded_id 不同
+        now = int(time.time())
+        return [
+            {"account_type": 2, "commission": 0.5, "direction": BUY,
+             "instrument_name": "浦发银行", "offset_flag": None,
+             "order_id": 101, "order_remark": "", "order_sysid": "SYS-101",
+             "order_type": BUY, "secu_account": "", "stock_code": "600000.SH",
+             "strategy_name": "demo", "traded_amount": 8950.0, "traded_id": tid,
+             "traded_price": 8.95, "traded_time": now, "traded_volume": vol}
+            for tid, vol in (("T-1", 300), ("T-2", 400), ("T-3", 300))
+        ]
+
+    def test_every_partial_fill_is_kept_not_just_the_last_one(self):
+        app_module.save_trades(self.account, self._fills())
+        conn = app_module.get_db_connection()
+        rows = conn.execute(
+            "SELECT traded_id, traded_volume FROM trades WHERE account_id = ? "
+            "ORDER BY traded_id", (self.account,)).fetchall()
+        conn.close()
+        self.assertEqual([(r[0], r[1]) for r in rows],
+                         [("T-1", 300), ("T-2", 400), ("T-3", 300)])
+
+    def test_replaying_the_same_fill_updates_in_place_instead_of_duplicating(self):
+        fills = self._fills()
+        app_module.save_trades(self.account, fills)
+        # 同一笔成交又被拉回来一次（轮询和回调都可能重复看到同一笔）
+        app_module.save_trades(self.account, [fills[0]])
+        conn = app_module.get_db_connection()
+        count = conn.execute(
+            "SELECT COUNT(*) FROM trades WHERE account_id = ?", (self.account,)
+        ).fetchone()[0]
+        conn.close()
+        self.assertEqual(count, 3, "重复拉到同一笔成交不该变成新行")
+
+    def test_partial_fills_all_show_up_in_the_trade_flow(self):
+        app_module.app.dependency_overrides[app_module.get_current_user] = admin_user
+        app_module.app.dependency_overrides[app_module.get_user_or_viewer] = admin_user
+        conn = app_module.get_db_connection()
+        conn.execute("INSERT OR REPLACE INTO users (account_id, alias) VALUES (?, ?)",
+                    (self.account, "分笔成交测试号"))
+        conn.commit()
+        conn.close()
+        try:
+            app_module.save_trades(self.account, self._fills())
+            client = TestClient(app_module.app)
+            response = client.get("/api/trade-flow?account_id=%s&days=1" % self.account)
+            self.assertEqual(response.status_code, 200, response.text)
+            volumes = sorted(r["volume"] for r in response.json()["records"])
+            self.assertEqual(volumes, [300, 300, 400])
+        finally:
+            app_module.app.dependency_overrides.clear()
+            conn = app_module.get_db_connection()
+            conn.execute("DELETE FROM users WHERE account_id = ?", (self.account,))
+            conn.commit()
+            conn.close()
+
+    def test_fills_with_no_traded_id_never_collide_with_each_other(self):
+        # traded_id 取不到时是 None，不是 ""：SQLite 里 NULL 互不冲突，
+        # 多笔“不知道编号”的成交不会互相顷掉。
+        fills = self._fills()
+        for f in fills:
+            f["traded_id"] = None
+        app_module.save_trades(self.account, fills)
+        conn = app_module.get_db_connection()
+        count = conn.execute(
+            "SELECT COUNT(*) FROM trades WHERE account_id = ?", (self.account,)
+        ).fetchone()[0]
+        conn.close()
+        self.assertEqual(count, 3)
+
+
 if __name__ == "__main__":
     unittest.main()

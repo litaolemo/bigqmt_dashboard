@@ -471,17 +471,15 @@ def init_db():
         traded_time INTEGER,
         traded_volume INTEGER,
         update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(order_id, order_sysid),
+        UNIQUE(account_id, traded_id),
         FOREIGN KEY (account_id) REFERENCES users (account_id)
     )
     ''')
-    
+
     # account_commands（待取指令队列）已废弃：直连之后没有客户端来取指令。
     # 下单留痕改用 order_audit，做T开关改用 t0_status。旧库里的残留表不动，
     # 读它的代码已经全部删掉。
 
-    # 为旧表添加唯一索引（如果不存在）
-    cursor.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_order_unique ON trades (order_id, order_sysid)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_trades_account_time ON trades (account_id, traded_time DESC)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_trades_time ON trades (traded_time DESC)')
 
@@ -727,6 +725,75 @@ def migrate_daily_profits_unique():
         print(f"[迁移] daily_profits 迁移出错: {e}")
 
 migrate_daily_profits_unique()
+
+
+def migrate_trades_unique():
+    """trades 的唯一约束从 (order_id, order_sysid) 迁移为 (account_id, traded_id)。
+
+    一笔委托常常分多笔成交，同一笔委托的所有分笔成交共享同一个 order_id /
+    order_sysid，只有 traded_id（交易所给每笔成交的成交编号）不同。旧约束把
+    分笔成交当成同一行反复 upsert，只留得下最后一笔——买卖流水里看到的委托
+    永远只有 1 笔成交，即使实际分了好几笔（GitHub issue #1）。
+
+    注意：这只是让今后的分笔成交不再互相覆盖；已经被覆盖掉的历史成交救不回来，
+    那些数据在旧约束生效期间已经被真实地丢弃了。
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='trades'")
+        row = cursor.fetchone()
+        if row and 'UNIQUE(account_id, traded_id)' not in (row[0] or ''):
+            cursor.executescript('''
+                PRAGMA foreign_keys = OFF;
+                BEGIN;
+                DROP INDEX IF EXISTS idx_trades_order_unique;
+                CREATE TABLE trades_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_id TEXT,
+                    account_type INTEGER,
+                    commission REAL,
+                    direction INTEGER,
+                    instrument_name TEXT,
+                    offset_flag INTEGER,
+                    order_id INTEGER,
+                    order_remark TEXT,
+                    order_sysid TEXT,
+                    order_type INTEGER,
+                    secu_account TEXT,
+                    stock_code TEXT,
+                    strategy_name TEXT,
+                    traded_amount REAL,
+                    traded_id TEXT,
+                    traded_price REAL,
+                    traded_time INTEGER,
+                    traded_volume INTEGER,
+                    update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(account_id, traded_id),
+                    FOREIGN KEY (account_id) REFERENCES users (account_id)
+                );
+                INSERT OR IGNORE INTO trades_new
+                    SELECT id, account_id, account_type, commission, direction,
+                           instrument_name, offset_flag, order_id, order_remark,
+                           order_sysid, order_type, secu_account, stock_code,
+                           strategy_name, traded_amount, traded_id, traded_price,
+                           traded_time, traded_volume, update_time
+                    FROM trades
+                    ORDER BY id;
+                DROP TABLE trades;
+                ALTER TABLE trades_new RENAME TO trades;
+                CREATE INDEX IF NOT EXISTS idx_trades_account_time ON trades (account_id, traded_time DESC);
+                CREATE INDEX IF NOT EXISTS idx_trades_time ON trades (traded_time DESC);
+                COMMIT;
+                PRAGMA foreign_keys = ON;
+            ''')
+            conn.commit()
+            print("[迁移] trades 唯一约束已从 (order_id, order_sysid) 改为 (account_id, traded_id)")
+        conn.close()
+    except Exception as e:
+        print(f"[迁移] trades 迁移出错: {e}")
+
+migrate_trades_unique()
 
 # 密码哈希辅助函数
 def verify_password(plain_password, hashed_password):
@@ -1284,31 +1351,36 @@ def get_current_holding_codes(account_id=None):
 def save_trades(account_id, trades):
     conn = get_db_connection()
     cursor = conn.cursor()
-    
-    # 插入或更新交易数据
+
+    # 插入或更新交易数据。按 (account_id, traded_id) 去重——不是 (order_id,
+    # order_sysid)：一笔委托常常分多笔成交，那两个字段在同一委托的所有分笔
+    # 成交上都相同，只有 traded_id（交易所成交编号）逐笔不同。用它们做唯一键
+    # 会把分笔成交当成同一行反复覆盖，只留下最后一笔（GitHub issue #1）。
+    # traded_id 取不到时是 NULL，SQLite 里 NULL 互不冲突，每笔都会正常插入。
+    #
     # 注意：traded_time 仅在首次插入时写入，后续更新时保留原始成交时间，
     # 避免 QMT 批量推送时用当前推送时刻覆盖历史成交的真实执行时间。
     for trade in trades:
         cursor.execute('''
         INSERT INTO trades (
-            account_id, account_type, commission, direction, instrument_name, offset_flag, 
-            order_id, order_remark, order_sysid, order_type, secu_account, stock_code, 
+            account_id, account_type, commission, direction, instrument_name, offset_flag,
+            order_id, order_remark, order_sysid, order_type, secu_account, stock_code,
             strategy_name, traded_amount, traded_id, traded_price, traded_time, traded_volume
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(order_id, order_sysid) DO UPDATE SET
-            account_id      = excluded.account_id,
+        ON CONFLICT(account_id, traded_id) DO UPDATE SET
             account_type    = excluded.account_type,
             commission      = excluded.commission,
             direction       = excluded.direction,
             instrument_name = excluded.instrument_name,
             offset_flag     = excluded.offset_flag,
+            order_id        = excluded.order_id,
             order_remark    = excluded.order_remark,
+            order_sysid     = excluded.order_sysid,
             order_type      = excluded.order_type,
             secu_account    = excluded.secu_account,
             stock_code      = excluded.stock_code,
             strategy_name   = excluded.strategy_name,
             traded_amount   = excluded.traded_amount,
-            traded_id       = excluded.traded_id,
             traded_price    = excluded.traded_price,
             traded_volume   = excluded.traded_volume,
             update_time     = CURRENT_TIMESTAMP,
