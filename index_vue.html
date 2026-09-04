@@ -871,8 +871,14 @@
                     </div>
                 </el-col>
                 <el-col :xs="12" :sm="4">
-                    <div class="stat-card" @click="showAdjustmentDialog = true" style="cursor: pointer;">
-                        <div class="stat-label">累计盈亏</div>
+                    <!-- 这张卡是「资金调整」的唯一入口，但卡片上原来没有任何可见提示，
+                         没人找得到（issue #2）。加个小标记和 title，别再只靠鼠标变手型。 -->
+                    <div class="stat-card" @click="showAdjustmentDialog = true" style="cursor: pointer;"
+                         title="点击记录出入金（银证转账）——转账和盈亏在数据上长得一样，不记的话转出的钱会被算成亏损">
+                        <div class="stat-label">累计盈亏
+                            <span style="font-size: 10px; color: var(--primary-color); margin-left: 4px;
+                                         border: 1px solid currentColor; border-radius: 3px; padding: 0 3px;">出入金</span>
+                        </div>
                         <div class="stat-value" :class="totalProfit >= 0 ? 'profit' : 'loss'">
                             {{ totalProfit >= 0 ? '+' : '' }}{{ formatMoney(totalProfit) }}
                         </div>
@@ -1072,6 +1078,27 @@
                                                     style="font-size: 16px;">
                                                     <el-icon><component :is="isPendingT0(row) ? 'RefreshRight' : 'RefreshLeft'" /></el-icon>
                                                 </el-button>
+                                            </div>
+                                        </template>
+
+                                        <!-- 条件单列 -->
+                                        <template v-else-if="col.prop === 'conditional_action'">
+                                            <div style="text-align: center;">
+                                                <!-- 没有条件单时给空串而不是 0：el-badge 对 0 是
+                                                     「显示这个 0」，给空串它才整个不渲染 -->
+                                                <el-badge :value="conditionalCountFor(row) || ''"
+                                                          :offset="[2, 6]">
+                                                    <el-button
+                                                        link
+                                                        :type="conditionalCountFor(row) ? 'warning' : 'info'"
+                                                        @click.stop="openConditionalDialog(row)"
+                                                        :title="conditionalCountFor(row) ? ('已挂 ' + conditionalCountFor(row) + ' 张条件单，点击新增') : '设置止损/止盈等条件单'"
+                                                        style="font-size: 16px;">
+                                                        <!-- 驼峰图标名必须走 :is：in-DOM 模板会把标签名小写成
+                                                             alarmclock，Vue 只会试 capitalize（Alarmclock），配不上 -->
+                                                        <el-icon><component :is="'AlarmClock'" /></el-icon>
+                                                    </el-button>
+                                                </el-badge>
                                             </div>
                                         </template>
 
@@ -1356,6 +1383,63 @@
                                 <el-tooltip v-else :content="row.status_msg || (row.status + '，不可撤')">
                                     <span style="color: var(--text-secondary); font-size: 12px;">—</span>
                                 </el-tooltip>
+                            </template>
+                        </el-table-column>
+                    </el-table>
+                </div>
+                <div v-if="conditionalOrders.length" style="padding: 0 10px 6px 10px;">
+                    <div style="display: flex; align-items: center; gap: 8px; padding: 10px 4px 6px 4px;">
+                        <span style="font-weight: 700; font-size: 13px;">条件单</span>
+                        <el-tag size="small" type="warning" effect="plain">{{ conditionalOrders.length }}</el-tag>
+                        <span style="color: var(--text-secondary); font-size: 12px;">
+                            还没触发，后台每 5 秒查一次价；触发后会变成上面的委托
+                        </span>
+                        <el-button size="small" text @click="loadConditionalOrders"
+                                   :loading="conditionalOrdersLoading">刷新</el-button>
+                    </div>
+                    <el-table :data="conditionalOrders" size="small" style="width: 100%;" max-height="30vh">
+                        <el-table-column prop="stock_name" label="名称" min-width="110" fixed>
+                            <template #default="{ row }">
+                                <span style="font-weight: bold; color: #fff;">{{ row.stock_name || '--' }}</span>
+                                <div style="font-size: 11px; color: var(--text-secondary); font-family: monospace;">{{ row.stock_code }}</div>
+                            </template>
+                        </el-table-column>
+                        <el-table-column prop="trigger_label" label="类型" width="120">
+                            <template #default="{ row }">
+                                <span :class="row.side === 'buy' ? 'profit' : 'loss'" style="font-weight: 700;">{{ row.trigger_label }}</span>
+                            </template>
+                        </el-table-column>
+                        <el-table-column prop="condition_text" label="触发条件" min-width="130">
+                            <template #default="{ row }">
+                                <span style="font-family: 'Share Tech Mono', monospace;">{{ row.condition_text }}</span>
+                            </template>
+                        </el-table-column>
+                        <el-table-column label="触发后卖/买" width="120" align="right">
+                            <template #default="{ row }">
+                                <span v-if="row.percentage">{{ row.percentage }}% <span style="color: var(--text-secondary); font-size: 11px;">持仓</span></span>
+                                <span v-else>{{ row.volume }} <span style="color: var(--text-secondary); font-size: 11px;">{{ row.unit }}</span></span>
+                            </template>
+                        </el-table-column>
+                        <el-table-column prop="price_type_label" label="报价" width="110" show-overflow-tooltip>
+                            <template #default="{ row }">
+                                <span style="color: var(--text-secondary);">{{ row.price_type_label }}</span>
+                            </template>
+                        </el-table-column>
+                        <el-table-column prop="created_at" label="创建时间" width="150" show-overflow-tooltip>
+                            <template #default="{ row }">
+                                <span style="font-family: 'Share Tech Mono', monospace; color: var(--text-secondary);">{{ row.created_at || '--' }}</span>
+                            </template>
+                        </el-table-column>
+                        <el-table-column prop="account_alias" label="账号" width="100" show-overflow-tooltip>
+                            <template #default="{ row }">
+                                <span style="color: var(--text-secondary);">{{ row.account_alias }}</span>
+                            </template>
+                        </el-table-column>
+                        <el-table-column label="操作" width="86" align="center" fixed="right">
+                            <template #default="{ row }">
+                                <el-button size="small" type="danger" plain
+                                           :loading="isCancellingConditional(row)"
+                                           @click="cancelConditionalOrder(row)">撤销</el-button>
                             </template>
                         </el-table-column>
                     </el-table>
@@ -2670,6 +2754,215 @@
                         type="primary"
                         @click="confirmBuyPosition"
                     >确认买入</el-button>
+                </div>
+            </template>
+        </el-dialog>
+
+        <!-- 条件单对话框 -->
+        <el-dialog v-model="showConditionalDialog" title="条件单" width="520px" custom-class="tech-dialog">
+            <div style="padding: 4px 0;" v-if="conditionalStock">
+                <div style="margin-bottom: 14px; text-align: center;">
+                    <span style="font-size: 18px; font-weight: bold; color: #fff;">{{ conditionalStock.instrument_name || conditionalStock.stock_code }}</span>
+                    <span style="font-size: 14px; color: var(--text-secondary); margin-left: 10px;">{{ conditionalStock.stock_code }}</span>
+                    <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">
+                        现价 {{ orderQuote && orderQuote.last_price ? orderQuote.last_price.toFixed(conditionalStockDecimals) : '--' }}
+                        <span v-if="conditionalCostPrice"> · 成本 {{ conditionalCostPrice.toFixed(conditionalStockDecimals) }}</span>
+                        <span v-if="conditionalAvailable"> · 可用 {{ conditionalAvailable }} {{ conditionalStockUnit }}</span>
+                    </div>
+                </div>
+
+                <el-radio-group v-model="conditionalForm.tab" size="small" style="margin-bottom: 14px;">
+                    <el-radio-button label="protect">保护持仓</el-radio-button>
+                    <el-radio-button label="limit_break">涨停破板卖</el-radio-button>
+                    <el-radio-button label="buy">条件买入</el-radio-button>
+                    <el-radio-button label="limit_buy">涨停买入</el-radio-button>
+                </el-radio-group>
+
+                <!-- 保护持仓：止损 + 止盈，可以只设一个，也可以两个一起 -->
+                <div v-if="conditionalForm.tab === 'protect'">
+                    <div v-for="part in [{key:'stopLoss',label:'止损',hint:'跌到这里就卖'},{key:'takeProfit',label:'止盈',hint:'涨到这里就卖'}]"
+                         :key="part.key"
+                         style="margin-bottom: 10px; padding: 10px 12px; border-radius: 6px;
+                                background: rgba(255,255,255,0.03);">
+                        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+                            <el-checkbox v-model="conditionalForm[part.key].on" style="margin-right: 0;">
+                                <span style="font-weight: 700;">{{ part.label }}</span>
+                            </el-checkbox>
+                            <span style="color: var(--text-secondary); font-size: 12px;">{{ part.hint }}</span>
+                        </div>
+                        <div v-if="conditionalForm[part.key].on"
+                             style="display: flex; align-items: center; gap: 8px;">
+                            <el-radio-group v-model="conditionalForm[part.key].mode" size="small">
+                                <el-radio-button label="price">价格</el-radio-button>
+                                <el-radio-button label="pct">涨跌幅</el-radio-button>
+                            </el-radio-group>
+                            <el-input-number v-if="conditionalForm[part.key].mode === 'price'"
+                                             v-model="conditionalForm[part.key].price"
+                                             :step="conditionalStockStep"
+                                             :precision="conditionalStockDecimals"
+                                             :min="0" size="small" style="flex: 1;"
+                                             controls-position="right"></el-input-number>
+                            <el-input-number v-else
+                                             v-model="conditionalForm[part.key].pct"
+                                             :step="1" :precision="2" :min="0" :max="100"
+                                             size="small" style="flex: 1;"
+                                             controls-position="right"></el-input-number>
+                            <span v-if="conditionalForm[part.key].mode === 'pct'"
+                                  style="color: var(--text-secondary); font-size: 12px;">%</span>
+                            <el-button v-if="conditionalCanBreakeven && part.key === 'stopLoss'"
+                                       size="small" text type="primary"
+                                       @click="applyBreakeven('stopLoss')"
+                                       title="用成本价当止损价，跌破成本就走">保本</el-button>
+                        </div>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
+                        <span style="color: var(--text-secondary); font-size: 13px; white-space: nowrap;">触发时卖出</span>
+                        <el-slider v-model="conditionalForm.protectPct" :step="10" show-stops
+                                   style="flex: 1;"></el-slider>
+                        <span style="color: var(--primary-color); font-weight: bold; width: 46px; text-align: right;">{{ conditionalForm.protectPct }}%</span>
+                    </div>
+                    <p style="color: var(--text-secondary); font-size: 12px; line-height: 1.6; margin: 0 0 12px 0;">
+                        比例按<b>触发那一刻</b>的可用持仓现算，不是现在这个数——中间加过仓减过仓都算数。
+                    </p>
+                </div>
+
+                <!-- 涨停破板卖出 -->
+                <div v-else-if="conditionalForm.tab === 'limit_break'">
+                    <div style="margin-bottom: 12px; padding: 10px 12px; border-radius: 6px;
+                                background: rgba(255,255,255,0.03); color: var(--text-secondary);
+                                font-size: 12px; line-height: 1.7;">
+                        当天<b>摸过涨停价</b>之后又跌破，就卖出。触发价是当天动态算的涨停价，不用填。
+                        没摸到过涨停不会触发。
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
+                        <span style="color: var(--text-secondary); font-size: 13px; white-space: nowrap;">触发时卖出</span>
+                        <el-slider v-model="conditionalForm.breakPct" :step="10" show-stops
+                                   style="flex: 1;"></el-slider>
+                        <span style="color: var(--primary-color); font-weight: bold; width: 46px; text-align: right;">{{ conditionalForm.breakPct }}%</span>
+                    </div>
+                </div>
+
+                <!-- 条件买入 -->
+                <div v-else-if="conditionalForm.tab === 'buy'">
+                    <div style="margin-bottom: 10px; padding: 10px 12px; border-radius: 6px;
+                                background: rgba(255,255,255,0.03);">
+                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                            <el-radio-group v-model="conditionalForm.buyType" size="small">
+                                <el-radio-button label="buy_dip">下探</el-radio-button>
+                                <el-radio-button label="buy_breakout">突破</el-radio-button>
+                            </el-radio-group>
+                            <span style="color: var(--text-secondary); font-size: 12px;">
+                                {{ conditionalForm.buyType === 'buy_dip' ? '跌到这里就买（抄底/补仓）' : '涨过这里就买（突破追涨）' }}
+                            </span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <el-radio-group v-model="conditionalForm.buy.mode" size="small">
+                                <el-radio-button label="price">价格</el-radio-button>
+                                <el-radio-button label="pct">涨跌幅</el-radio-button>
+                            </el-radio-group>
+                            <el-input-number v-if="conditionalForm.buy.mode === 'price'"
+                                             v-model="conditionalForm.buy.price"
+                                             :step="conditionalStockStep"
+                                             :precision="conditionalStockDecimals"
+                                             :min="0" size="small" style="flex: 1;"
+                                             controls-position="right"></el-input-number>
+                            <el-input-number v-else v-model="conditionalForm.buy.pct"
+                                             :step="1" :precision="2" :min="0" :max="100"
+                                             size="small" style="flex: 1;"
+                                             controls-position="right"></el-input-number>
+                            <span v-if="conditionalForm.buy.mode === 'pct'"
+                                  style="color: var(--text-secondary); font-size: 12px;">%</span>
+                        </div>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
+                        <span style="color: var(--text-secondary); font-size: 13px; white-space: nowrap;">买入数量</span>
+                        <el-input-number v-model="conditionalForm.buyVolume"
+                                         :step="orderQuote ? orderQuote.min_lot : 100"
+                                         :min="0" size="small" style="flex: 1;"
+                                         controls-position="right"></el-input-number>
+                        <span style="color: var(--text-secondary); font-size: 12px;">{{ conditionalStockUnit }}</span>
+                    </div>
+                </div>
+
+                <!-- 涨停买入 -->
+                <div v-else-if="conditionalForm.tab === 'limit_buy'">
+                    <div style="margin-bottom: 12px; padding: 10px 12px; border-radius: 6px;
+                                background: rgba(255,255,255,0.03); color: var(--text-secondary);
+                                font-size: 12px; line-height: 1.7;">
+                        价格<b>触及当天涨停价</b>就买入（封板抢排单）。触发价是当天动态算的涨停价，不用填。
+                        封死的话未必能成交，条件单只负责把单报出去。
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
+                        <span style="color: var(--text-secondary); font-size: 13px; white-space: nowrap;">买入数量</span>
+                        <el-input-number v-model="conditionalForm.limitBuyVolume"
+                                         :step="orderQuote ? orderQuote.min_lot : 100"
+                                         :min="0" size="small" style="flex: 1;"
+                                         controls-position="right"></el-input-number>
+                        <span style="color: var(--text-secondary); font-size: 12px;">{{ conditionalStockUnit }}</span>
+                    </div>
+                </div>
+
+                <!-- 触发后怎么报单 -->
+                <div style="margin-bottom: 12px; padding: 10px 12px; border-radius: 6px;
+                            background: rgba(255,255,255,0.03);">
+                    <div v-if="orderTradeModeVisible"
+                         style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+                        <span style="color: var(--text-secondary); font-size: 13px; white-space: nowrap;">交易类型</span>
+                        <el-select v-model="orderTradeMode" size="small" style="flex: 1;">
+                            <el-option v-for="m in orderTradeModes" :key="m.value"
+                                       :label="m.side_label" :value="m.value">
+                                <span>{{ m.side_label }}</span>
+                                <span style="float: right; margin-left: 16px; font-size: 12px;
+                                             color: var(--text-secondary);">{{ m.hint }}</span>
+                            </el-option>
+                        </el-select>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span style="color: var(--text-secondary); font-size: 13px; white-space: nowrap;">触发后报价</span>
+                        <el-select v-model="orderPriceType" size="small" style="flex: 1;">
+                            <el-option-group v-for="g in conditionalPriceTypeGroups" :key="g.label" :label="g.label">
+                                <el-option v-for="t in g.items" :key="t.value"
+                                           :label="t.label" :value="t.value">
+                                    <span>{{ t.label }}</span>
+                                    <span style="float: right; margin-left: 16px; font-size: 12px;
+                                                 color: var(--text-secondary);">{{ t.hint }}</span>
+                                </el-option>
+                            </el-option-group>
+                        </el-select>
+                    </div>
+                    <div style="font-size: 12px; color: var(--text-secondary); margin-top: 6px; line-height: 1.6;">
+                        只能用市价类：条件单只存触发价，没有单独的委托价。这个选择会记住，
+                        和手动下单的记忆分开。
+                    </div>
+                </div>
+
+                <!-- 会建出哪几张单，提交前先摊开说清楚 -->
+                <div v-if="conditionalPlanText.length"
+                     style="margin-bottom: 10px; padding: 10px 12px; border-radius: 6px;
+                            background: rgba(64,158,255,0.08); border-left: 3px solid var(--primary-color);">
+                    <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;">
+                        将创建 {{ conditionalPlanText.length }} 张条件单，各自独立触发、独立撤销：
+                    </div>
+                    <div v-for="(text, i) in conditionalPlanText" :key="i"
+                         style="font-size: 13px; color: #fff; line-height: 1.9;">· {{ text }}</div>
+                </div>
+
+                <div v-if="conditionalFormError"
+                     style="color: var(--danger-color, #f56c6c); font-size: 12px; font-weight: bold;
+                            margin-bottom: 8px;">{{ conditionalFormError }}</div>
+
+                <p style="color: var(--text-secondary); line-height: 1.6; font-size: 12px; margin: 0;">
+                    后台每 5 秒查一次价，越过触发线就<b>真的报单</b>，走的是和手动下单同一条链路——
+                    风控、价格笼子、审计一个都不少。面板关掉也照常工作。
+                </p>
+            </div>
+            <template #footer>
+                <div style="display: flex; justify-content: flex-end; gap: 10px;">
+                    <el-button @click="showConditionalDialog = false">取消</el-button>
+                    <el-button type="primary"
+                               :disabled="!!conditionalFormError"
+                               :loading="conditionalSubmitting"
+                               @click="submitConditionalOrders">创建条件单</el-button>
                 </div>
             </template>
         </el-dialog>

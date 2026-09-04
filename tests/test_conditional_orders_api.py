@@ -2,6 +2,7 @@
 
 import sys
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
@@ -85,6 +86,26 @@ class ConditionalOrderApiTests(unittest.TestCase):
         self.assertEqual(orders[0]["trigger_label"], "止损")
         self.assertEqual(orders[0]["side_label"], "卖出")
         self.assertEqual(orders[0]["unit"], "股")
+
+    def test_list_carries_what_the_panel_needs_to_show(self):
+        # 名称/别名/报价方式标签都不在 conditional_orders 表里，是现查现算的
+        self._create()
+        row = self.client.get(
+            "/api/conditional-orders?account_id=%s" % self.account).json()["orders"][0]
+        self.assertEqual(row["condition_text"], "跌破 8.50")
+        self.assertEqual(row["price_type_label"], "对手方最优")
+        self.assertEqual(row["status_label"], "生效中")
+        self.assertIn("account_alias", row)
+        self.assertIn("stock_name", row)
+
+    def test_created_at_is_local_time_not_utc(self):
+        # CURRENT_TIMESTAMP 是 UTC，界面上直接显示会差好几个小时（UTC+8 差 8 小时）
+        self._create()
+        row = self.client.get(
+            "/api/conditional-orders?account_id=%s" % self.account).json()["orders"][0]
+        created = datetime.strptime(row["created_at"][:19], "%Y-%m-%d %H:%M:%S")
+        self.assertLess(abs((datetime.now() - created).total_seconds()), 120,
+                        "创建时间不是本地时间：%s（现在 %s）" % (row["created_at"], datetime.now()))
 
     def test_list_defaults_to_active_only(self):
         created = self._create().json()["id"]

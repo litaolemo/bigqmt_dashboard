@@ -11,7 +11,7 @@ import json
 import os
 import re
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import threading
 import time
 import shutil
@@ -8527,6 +8527,104 @@ _CONDITIONAL_TRIGGER_LABELS = {
 }
 
 
+_CONDITIONAL_STATUS_LABELS = {
+    "active": "生效中", "submitting": "报单中", "triggered": "已触发",
+    "cancelled": "已撤销", "failed": "已失效",
+}
+
+
+def _conditional_stock_names(codes):
+    """代码 → 名称。conditional_orders 表不存名字，现查。
+
+    名字会改（换股名、转债转股），存快照下来早晚对不上；而且条件买入可以挂在
+    一只还没持有的票上，持仓表里未必有 —— 所以持仓查不到就退到委托记录。
+    """
+    codes = [c for c in {str(c or "") for c in codes} if c]
+    if not codes:
+        return {}
+    marks = ",".join("?" * len(codes))
+    names = {}
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        # 先委托记录后持仓：持仓的更新，让它覆盖
+        for table in ("orders", "positions"):
+            cursor.execute(
+                "SELECT stock_code, instrument_name FROM %s "
+                "WHERE stock_code IN (%s) AND COALESCE(instrument_name, '') != ''"
+                % (table, marks), codes)
+            names.update({code: name for code, name in cursor.fetchall() if name})
+        conn.close()
+    except Exception as e:
+        print(f"[条件单] 取标的名失败（不影响列表）: {e}")
+    return names
+
+
+def _conditional_local_time(value):
+    """conditional_orders 的时间戳是 SQLite 的 CURRENT_TIMESTAMP，也就是 UTC。
+
+    库里其它表（capital_adjustments 之类）存的是本地时间，但这张表建的时候用了
+    默认值，就成了 UTC。存储不动——触发引擎的重试通知冷却是拿 utcnow() 跟
+    last_notified_at 比的，改存储会把那段逻辑弄反（这个坑踩过一次）。只在往
+    界面送的时候换成本地时间。
+    """
+    if not value:
+        return value
+    try:
+        parsed = datetime.strptime(str(value)[:19], "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return value
+    return parsed.replace(tzinfo=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _describe_conditional_condition(row):
+    """列表里那句「什么时候会触发」。动态类型没有用户填的触发价，单独措辞。"""
+    compare = row.get("compare")
+    if compare == "limit_break":
+        return "涨停后开板"
+    if compare == "limit_touch":
+        return "触及当日涨停价"
+    price = row.get("trigger_price") or 0
+    decimals = 3 if instruments.describe(row["stock_code"])["price_decimals"] >= 3 else 2
+    return "%s %.*f" % ("涨破" if compare == "gte" else "跌破", decimals, price)
+
+
+def _decorate_conditional_orders(rows):
+    """给条件单列表补上界面要显示的东西——名称、别名、各种中文标签。
+
+    都是现查现算，不进表：名字和别名会改，标签是展示层的事。放服务端是为了
+    别让同一套映射在前端再写一遍（报价方式有二十来种，抄一份必然会走样）。
+    """
+    names = _conditional_stock_names([r["stock_code"] for r in rows])
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT account_id, COALESCE(alias, account_name, account_id) FROM users")
+        aliases = dict(cursor.fetchall())
+        conn.close()
+    except Exception:
+        aliases = {}
+    for row in rows:
+        row["unit"] = instruments.unit_name(row["stock_code"])
+        row["side_label"] = "卖出" if row["side"] == "sell" else "买入"
+        row["trigger_label"] = _CONDITIONAL_TRIGGER_LABELS.get(
+            row["trigger_type"], row["trigger_type"])
+        row["stock_name"] = names.get(row["stock_code"], "")
+        row["account_alias"] = aliases.get(row["account_id"], row["account_id"])
+        row["status_label"] = _CONDITIONAL_STATUS_LABELS.get(row["status"], row["status"])
+        row["condition_text"] = _describe_conditional_condition(row)
+        row["is_dynamic"] = row["trigger_type"] in trigger_store.DYNAMIC_TRIGGER_TYPES
+        row["created_at"] = _conditional_local_time(row.get("created_at"))
+        row["triggered_at"] = _conditional_local_time(row.get("triggered_at"))
+        try:
+            # 不带 stock_code：这里只要标签，交易所适用性建单时已经把过关了
+            row["price_type_label"] = bridge_orders.pricetypes.resolve(
+                row["price_type"])[1]["label"]
+        except ValueError:
+            row["price_type_label"] = row["price_type"] or ""
+    return rows
+
+
 def _inherit_conditional_order_choice(username, account_id, side, stock_code,
                                       price_type, trade_mode):
     """这次没明确给的字段，沿用上次建条件单用的选择，返回 (报价方式, 交易类型)。
@@ -8613,11 +8711,7 @@ async def list_conditional_orders_endpoint(
         account_id = current_user["account_id"]
     rows = (trigger_store.list_all(account_id or None, limit) if include_inactive
            else trigger_store.list_active(account_id or None))
-    for row in rows:
-        row["unit"] = instruments.unit_name(row["stock_code"])
-        row["side_label"] = "卖出" if row["side"] == "sell" else "买入"
-        row["trigger_label"] = _CONDITIONAL_TRIGGER_LABELS.get(
-            row["trigger_type"], row["trigger_type"])
+    _decorate_conditional_orders(rows)
     return {"status": "success", "orders": rows, "count": len(rows)}
 
 

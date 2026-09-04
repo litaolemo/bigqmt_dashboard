@@ -254,8 +254,13 @@ const app = createApp({
         const orderAccountId = ref('');
         const orderTradeMode = ref('');
 
-        const loadOrderQuote = async (code, side) => {
+        // 手动下单弹窗和条件单弹窗共用这一套报价状态，靠 scope 区分：
+        // 两边的默认报价方式不同，记忆也是分开的两套（见服务端 /api/instrument）。
+        const orderScope = ref('manual');
+
+        const loadOrderQuote = async (code, side, scope) => {
             orderQuoteSide.value = side || 'buy';
+            orderScope.value = scope || 'manual';
             orderQuote.value = null;
             if (!code) return;
             orderQuoteLoading.value = true;
@@ -276,6 +281,7 @@ const app = createApp({
                     params.set('account_id', accountId);
                 }
                 params.set('side', orderQuoteSide.value);
+                if (orderScope.value !== 'manual') params.set('scope', orderScope.value);
                 const resp = await fetch(
                     `/api/instrument/${encodeURIComponent(code)}?${params}`, {
                     headers: { 'Authorization': `Bearer ${accessToken.value}` }
@@ -302,12 +308,12 @@ const app = createApp({
             }
         };
 
-        const resetOrderPricing = (code, side, accountId) => {
-            orderPriceType.value = 'latest';
+        const resetOrderPricing = (code, side, accountId, scope) => {
+            orderPriceType.value = (scope === 'conditional') ? 'peer' : 'latest';
             orderLimitPrice.value = 0;
             orderTradeMode.value = '';
             orderAccountId.value = accountId || '';
-            loadOrderQuote(code, side);
+            loadOrderQuote(code, side, scope);
         };
 
         // 买卖指令类型。普通账户只有「普通买卖」一条，那就不要占一行界面；
@@ -523,6 +529,7 @@ const app = createApp({
             { prop: 'sell_action', label: '卖出', width: '50', align: 'center' },
             { prop: 'buy_action', label: '买入', width: '50', align: 'center' },
             { prop: 't0_action', label: '做T', width: '50', align: 'center' },
+            { prop: 'conditional_action', label: '条件单', width: '58', align: 'center' },
             { prop: 'delete_action', label: '删除', width: '50', align: 'center' },
             { prop: 'instrument_name', label: '名称', minWidth: '100' },
             { prop: 'stock_code', label: '代码', width: '80' },
@@ -550,7 +557,8 @@ const app = createApp({
         // 展示模式是「服务端全局开关」，由 /api/data 返回的 display_mode 同步；仅管理员可切换
         const displayMode = ref(false);
         const displayModeToggling = ref(false);
-        const OPERATION_COLUMN_PROPS = ['is_locked', 'sell_action', 'buy_action', 't0_action', 'delete_action'];
+        const OPERATION_COLUMN_PROPS = ['is_locked', 'sell_action', 'buy_action', 't0_action',
+                                       'conditional_action', 'delete_action'];
         const visiblePositionColumns = computed(() =>
             displayMode.value
                 ? positionColumns.value.filter(c => !OPERATION_COLUMN_PROPS.includes(c.prop))
@@ -765,7 +773,7 @@ const app = createApp({
         // 加载保存的列顺序
         const loadSavedColumnOrder = () => {
             const saved = localStorage.getItem('position_column_order');
-            const currentVersion = 'v6'; // 列配置版本号，修改列时更新
+            const currentVersion = 'v7'; // 列配置版本号，修改列时更新
             const savedVersion = localStorage.getItem('position_column_version');
 
             // 如果版本变化或没有保存的列顺序，使用默认列顺序并保存
@@ -1572,6 +1580,7 @@ const app = createApp({
                 ];
                 if (!boardLoaded) tasks.push(loadResearchBoard(false));
                 if (!tradeFlowLoaded) tasks.push(Promise.resolve(loadTradeFlow(true)).catch(() => {}));
+                tasks.push(Promise.resolve(loadConditionalOrders()).catch(() => {}));
                 await Promise.all(tasks);
             } finally {
                 loading.value = false;
@@ -2825,6 +2834,297 @@ const app = createApp({
             showBuyPositionDialog.value = true;
         };
 
+        // ======================= 条件单 =======================
+        // 一个弹窗覆盖 6 种触发类型，按「你想干什么」分四页，而不是让人先从
+        // 六个类型名里挑一个：止损/止盈是同一件事的两头（一起设才是常态），
+        // 涨停破板卖出和涨停买入不用填价，条件买入要选下探还是突破。
+
+        const showConditionalDialog = ref(false);
+        const conditionalStock = ref(null);
+        const conditionalSubmitting = ref(false);
+        const conditionalOrders = ref([]);
+        const conditionalOrdersLoading = ref(false);
+        const cancellingConditional = ref(new Set());
+
+        const newConditionalForm = () => ({
+            tab: 'protect',
+            stopLoss:   { on: true,  mode: 'price', price: 0, pct: 8 },
+            takeProfit: { on: false, mode: 'price', price: 0, pct: 15 },
+            protectPct: 100,
+            breakPct: 100,
+            buyType: 'buy_dip',
+            buy: { mode: 'price', price: 0, pct: 5 },
+            buyVolume: 0,
+            limitBuyVolume: 0,
+        });
+        const conditionalForm = ref(newConditionalForm());
+
+        // 条件单只能用市价类。限价类要一个单独的委托价，而条件单只存了触发价，
+        // 触发时拿触发价去挂限价单可能早就不是合理价格了——服务端会直接拒，
+        // 这里干脆不给这个选项，别让人选完了才被拒。
+        const conditionalPriceTypeGroups = computed(() =>
+            orderPriceTypeGroups.value
+                .map(g => ({ label: g.label,
+                             items: (g.items || []).filter(t => t.price_role !== 'order') }))
+                .filter(g => g.items.length));
+
+        const conditionalStockDecimals = computed(() =>
+            (orderQuote.value && orderQuote.value.price_decimals) || 2);
+        const conditionalStockStep = computed(() =>
+            (orderQuote.value && orderQuote.value.price_tick) || 0.01);
+        const conditionalStockUnit = computed(() =>
+            (orderQuote.value && orderQuote.value.unit) || '股');
+
+        // 成本价，用于「保本」快捷键。汇总视图的行是多个账号合并出来的加权成本，
+        // 拿它当保本价没有意义，所以那种情况不给这个按钮（见 conditionalCanBreakeven）。
+        const conditionalCostPrice = computed(() => {
+            const row = conditionalStock.value;
+            return row && Number(row.avg_price) > 0 ? Number(row.avg_price) : 0;
+        });
+        const conditionalCanBreakeven = computed(() =>
+            conditionalCostPrice.value > 0
+            && String(conditionalAccountId.value || '').toLowerCase() !== 'all');
+
+        // 条件单必须落到一个具体账号：它是给某个账号的持仓上的保护，
+        // 汇总视图那种「一次下发到所有账号」的语义在这里说不通。
+        const conditionalAccountId = computed(() => {
+            const row = conditionalStock.value;
+            const fromRow = row && row.account_id;
+            if (fromRow && String(fromRow).toLowerCase() !== 'all') return fromRow;
+            const current = currentAccountId.value;
+            return (current && String(current).toLowerCase() !== 'all') ? current : '';
+        });
+
+        const conditionalAvailable = computed(() => {
+            const row = conditionalStock.value;
+            return row ? (Number(row.can_use_volume) || 0) : 0;
+        });
+
+        const applyBreakeven = (which) => {
+            if (!conditionalCanBreakeven.value) return;
+            const target = conditionalForm.value[which];
+            target.mode = 'price';
+            target.price = Number(conditionalCostPrice.value.toFixed(
+                conditionalStockDecimals.value));
+        };
+
+        // 这一页会建出哪几张单。写成一个函数是因为界面上要先把它显示出来
+        // 让人确认——「设一次出两张单」不该是提交之后才发现的事。
+        const conditionalPlan = computed(() => {
+            const f = conditionalForm.value;
+            const row = conditionalStock.value;
+            if (!row) return [];
+            const plan = [];
+            const priced = (part, type) => {
+                const item = { trigger_type: type };
+                if (part.mode === 'pct') item.trigger_pct = Number(part.pct) || 0;
+                else item.trigger_price = Number(part.price) || 0;
+                return item;
+            };
+            if (f.tab === 'protect') {
+                if (f.stopLoss.on) {
+                    plan.push(Object.assign(priced(f.stopLoss, 'stop_loss'),
+                                            { percentage: f.protectPct }));
+                }
+                if (f.takeProfit.on) {
+                    plan.push(Object.assign(priced(f.takeProfit, 'take_profit'),
+                                            { percentage: f.protectPct }));
+                }
+            } else if (f.tab === 'limit_break') {
+                plan.push({ trigger_type: 'limit_up_break', percentage: f.breakPct });
+            } else if (f.tab === 'buy') {
+                plan.push(Object.assign(priced(f.buy, f.buyType),
+                                        { volume: Number(f.buyVolume) || 0 }));
+            } else if (f.tab === 'limit_buy') {
+                plan.push({ trigger_type: 'limit_up_buy',
+                            volume: Number(f.limitBuyVolume) || 0 });
+            }
+            return plan;
+        });
+
+        const CONDITIONAL_TYPE_LABELS = {
+            stop_loss: '止损', take_profit: '止盈',
+            buy_dip: '条件买入（下探）', buy_breakout: '条件买入（突破）',
+            limit_up_break: '涨停破板卖出', limit_up_buy: '涨停买入',
+        };
+
+        const conditionalPlanText = computed(() => conditionalPlan.value.map(item => {
+            const label = CONDITIONAL_TYPE_LABELS[item.trigger_type] || item.trigger_type;
+            let when = '触及当日涨停价';
+            if (item.trigger_type === 'limit_up_break') when = '涨停后开板';
+            else if (item.trigger_pct !== undefined) {
+                const up = ['take_profit', 'buy_breakout'].includes(item.trigger_type);
+                when = `${up ? '涨' : '跌'} ${item.trigger_pct}%`;
+            } else if (item.trigger_price !== undefined) {
+                const up = ['take_profit', 'buy_breakout'].includes(item.trigger_type);
+                when = `${up ? '涨破' : '跌破'} ${Number(item.trigger_price).toFixed(conditionalStockDecimals.value)}`;
+            }
+            const amount = item.percentage
+                ? `${item.percentage}% 持仓`
+                : `${item.volume || 0} ${conditionalStockUnit.value}`;
+            return `${label}：${when} → ${amount}`;
+        }));
+
+        const conditionalFormError = computed(() => {
+            if (!conditionalStock.value) return '';
+            if (!conditionalAccountId.value) return '条件单要挂在具体账号上，请先在上方选择账号';
+            const plan = conditionalPlan.value;
+            if (!plan.length) return '至少要勾选一个条件';
+            for (const item of plan) {
+                if (item.trigger_pct !== undefined && !(item.trigger_pct > 0)) {
+                    return '涨跌幅要大于 0';
+                }
+                if (item.trigger_price !== undefined && !(item.trigger_price > 0)) {
+                    return '触发价要大于 0';
+                }
+                if (item.percentage !== undefined && !(item.percentage > 0)) {
+                    return '卖出比例要大于 0';
+                }
+                if (item.volume !== undefined && !(item.volume > 0)) {
+                    return '买入数量要大于 0';
+                }
+            }
+            // 止损价高于止盈价的话，两张单会同时挂着、先到先触发，多半是填反了
+            const f = conditionalForm.value;
+            if (f.tab === 'protect' && f.stopLoss.on && f.takeProfit.on
+                    && f.stopLoss.mode === 'price' && f.takeProfit.mode === 'price'
+                    && Number(f.stopLoss.price) >= Number(f.takeProfit.price)) {
+                return '止损价要低于止盈价，检查一下是不是填反了';
+            }
+            return '';
+        });
+
+        const openConditionalDialog = (row) => {
+            if (!isAuthenticated.value) return;
+            conditionalStock.value = row;
+            conditionalForm.value = newConditionalForm();
+            // 有持仓就默认停在「保护」页，空仓（比如从自选点进来）默认条件买入
+            const held = Number(row && row.can_use_volume) || 0;
+            conditionalForm.value.tab = held > 0 ? 'protect' : 'buy';
+            resetOrderPricing(row && row.stock_code,
+                              held > 0 ? 'sell' : 'buy',
+                              conditionalAccountId.value, 'conditional');
+            showConditionalDialog.value = true;
+            loadConditionalOrders();
+        };
+
+        // 换页会换方向（保护/破板是卖，条件买入/涨停买入是买），报价方式的记忆
+        // 是按方向存的，所以得重新拉一次，否则预选的是上一个方向记住的那个。
+        watch(() => conditionalForm.value.tab, (tab) => {
+            if (!showConditionalDialog.value || !conditionalStock.value) return;
+            const side = ['protect', 'limit_break'].includes(tab) ? 'sell' : 'buy';
+            if (side === orderQuoteSide.value) return;
+            resetOrderPricing(conditionalStock.value.stock_code, side,
+                              conditionalAccountId.value, 'conditional');
+        });
+
+        const submitConditionalOrders = async () => {
+            if (conditionalFormError.value || conditionalSubmitting.value) return;
+            const row = conditionalStock.value;
+            const plan = conditionalPlan.value;
+            conditionalSubmitting.value = true;
+            const done = [];
+            const failed = [];
+            try {
+                for (const item of plan) {
+                    const payload = Object.assign({
+                        account_id: conditionalAccountId.value,
+                        stock_code: row.stock_code,
+                        price_type: orderPriceType.value,
+                        trade_mode: orderTradeMode.value || '',
+                    }, item);
+                    try {
+                        const resp = await fetch('/api/conditional-orders', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json',
+                                       'Authorization': `Bearer ${accessToken.value}` },
+                            body: JSON.stringify(payload)
+                        });
+                        const body = await resp.json();
+                        if (resp.ok) done.push(CONDITIONAL_TYPE_LABELS[item.trigger_type]);
+                        else failed.push(`${CONDITIONAL_TYPE_LABELS[item.trigger_type]}：${body.detail || '创建失败'}`);
+                    } catch (e) {
+                        failed.push(`${CONDITIONAL_TYPE_LABELS[item.trigger_type]}：${e.message}`);
+                    }
+                }
+            } finally {
+                conditionalSubmitting.value = false;
+            }
+            // 一次可能建两张单，得分别报结果：一张成一张败的时候，
+            // 只说「成功」或只说「失败」都是错的。
+            if (done.length) {
+                ElementPlus.ElMessage.success(`已创建：${done.join('、')}`);
+            }
+            failed.forEach(msg => ElementPlus.ElMessage.error(msg));
+            if (done.length) {
+                await loadConditionalOrders();
+                if (!failed.length) showConditionalDialog.value = false;
+            }
+        };
+
+        const loadConditionalOrders = async () => {
+            if (!isAuthenticated.value) return;
+            conditionalOrdersLoading.value = true;
+            try {
+                const account = currentAccountId.value || 'all';
+                const resp = await fetch(
+                    `/api/conditional-orders?account_id=${encodeURIComponent(account)}`, {
+                    headers: { 'Authorization': `Bearer ${accessToken.value}` }
+                });
+                if (resp.ok) conditionalOrders.value = (await resp.json()).orders || [];
+            } catch (e) {
+                console.error('加载条件单失败', e);
+            } finally {
+                conditionalOrdersLoading.value = false;
+            }
+        };
+
+        const isCancellingConditional = (row) =>
+            cancellingConditional.value.has(row && row.id);
+
+        const cancelConditionalOrder = async (row) => {
+            if (!row || isCancellingConditional(row)) return;
+            try {
+                await ElementPlus.ElMessageBox.confirm(
+                    `撤销「${row.trigger_label} ${row.stock_name || row.stock_code}」？撤销后不再监控这个条件。`,
+                    '撤销条件单', { type: 'warning', confirmButtonText: '撤销', cancelButtonText: '再想想' });
+            } catch (e) {
+                return;   // 用户点了取消
+            }
+            cancellingConditional.value = new Set(cancellingConditional.value).add(row.id);
+            try {
+                const resp = await fetch('/api/conditional-orders/cancel', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json',
+                               'Authorization': `Bearer ${accessToken.value}` },
+                    body: JSON.stringify({ id: row.id })
+                });
+                const body = await resp.json();
+                if (resp.ok) {
+                    ElementPlus.ElMessage.success('已撤销');
+                    await loadConditionalOrders();
+                } else {
+                    ElementPlus.ElMessage.error(body.detail || '撤销失败');
+                }
+            } catch (e) {
+                ElementPlus.ElMessage.error(e.message || '撤销失败');
+            } finally {
+                const next = new Set(cancellingConditional.value);
+                next.delete(row.id);
+                cancellingConditional.value = next;
+            }
+        };
+
+        // 持仓行上的小红点：这只票有没有挂着生效中的条件单
+        const conditionalCountFor = (row) => {
+            if (!row || !row.stock_code) return 0;
+            const account = row.account_id;
+            const aggregated = !account || String(account).toLowerCase() === 'all';
+            return conditionalOrders.value.filter(o =>
+                o.stock_code === row.stock_code
+                && (aggregated || o.account_id === account)).length;
+        };
+
         // 撤单。委托号是 order_id，服务端据此调 cancel_order_stock。
         const cancelPendingOrder = async (row) => {
             if (!row || !row.cancelable) return;
@@ -3047,6 +3347,9 @@ const app = createApp({
         };
 
         watch([tradeFlowSide, tradeFlowDays, tradeFlowQuery, currentAccountId], () => loadTradeFlow(true));
+        // 条件单跟着账号走。它不跟买卖流水共用筛选（方向/天数/关键词对它没意义），
+        // 所以单独 watch 一个 currentAccountId。
+        watch(currentAccountId, () => loadConditionalOrders());
 
         // 取消卖出
         const cancelSellPosition = async (row) => {
@@ -4398,6 +4701,30 @@ const app = createApp({
             tradeFlowPending,
             cancelPendingOrder,
             isCancelling,
+            // 条件单
+            showConditionalDialog,
+            conditionalStock,
+            conditionalForm,
+            conditionalSubmitting,
+            conditionalOrders,
+            conditionalOrdersLoading,
+            conditionalPriceTypeGroups,
+            conditionalStockDecimals,
+            conditionalStockStep,
+            conditionalStockUnit,
+            conditionalCostPrice,
+            conditionalCanBreakeven,
+            conditionalAccountId,
+            conditionalAvailable,
+            conditionalPlanText,
+            conditionalFormError,
+            conditionalCountFor,
+            applyBreakeven,
+            openConditionalDialog,
+            submitConditionalOrders,
+            loadConditionalOrders,
+            cancelConditionalOrder,
+            isCancellingConditional,
             orderPriceType,
             orderLimitPrice,
             orderQuote,
