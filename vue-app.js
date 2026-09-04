@@ -262,9 +262,18 @@ const app = createApp({
             try {
                 // 带上账号和方向：买卖指令类型看的是账户类型，而服务端还会按
                 // （人、账号、方向）把上次用过的选择当默认值送回来
+                //
+                // 汇总视图要的是「不带账号」，但这个值有两个来源，大小写不一样：
+                // 账号选择器给的是小写 'all'，而汇总持仓行的 account_id 是后端
+                // SQL 里拼出来的大写 'ALL'（app.py 的 "'ALL' as account_id"）。
+                // 只挡小写的话，从汇总视图点卖出会把 account_id=ALL 真发出去，
+                // 服务端查不到这个账号：账户类型退回 STOCK（信用账户的融资融券
+                // 就从选择器里消失了），偏好也匹配不上（记忆功能整个失效）。
+                // 两个都是静默降级，界面上看不出来 —— 而汇总正是管理员的默认视图。
                 const params = new URLSearchParams();
-                if (orderAccountId.value && orderAccountId.value !== 'all') {
-                    params.set('account_id', orderAccountId.value);
+                const accountId = String(orderAccountId.value || '');
+                if (accountId && accountId.toLowerCase() !== 'all') {
+                    params.set('account_id', accountId);
                 }
                 params.set('side', orderQuoteSide.value);
                 const resp = await fetch(

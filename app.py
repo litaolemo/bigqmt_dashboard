@@ -8681,6 +8681,11 @@ async def get_instrument_spec(
     spec["price_types"] = bridge_orders.price_type_choices(stock_code)
     spec["price_type_groups"] = list(bridge_orders.pricetypes.GROUP_ORDER)
 
+    # 'all' / 'ALL' 是全站的「汇总视图」哨兵值，不是账号。别把它当账号查：
+    # account_type_of 查不到会闷声返回 STOCK，信用账户的融资融券选项就没了。
+    if account_id.strip().lower() == "all":
+        account_id = ""
+
     # 买卖指令类型，按账户类型给。普通账户只有一条，前端据此隐藏选择器；
     # 信用账户才会出现担保品 / 融资融券 / 还券还款。
     account_type = bridge_pool.account_type_of(account_id) if account_id else "STOCK"

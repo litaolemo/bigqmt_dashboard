@@ -420,5 +420,100 @@ class OrderPreferenceTests(unittest.TestCase):
         self.assertEqual(body["default_price_type"], "latest")
 
 
+class AggregateSentinelTests(unittest.TestCase):
+    """汇总视图的 all / ALL 是哨兵值，不是账号。
+
+    真实发现的问题：管理员登录后默认就停在「所有账号(汇总)」视图，而汇总持仓行的
+    account_id 是后端 SQL 里拼出来的大写 'ALL'（app.py 的 "'ALL' as account_id"）。
+    前端下单弹窗把它当成账号发给了 /api/instrument，服务端拿去查账户类型 ——
+    查不到就闷声退回 STOCK，信用账户的融资融券/还券还款从选择器里消失；
+    「记住上次选择」也永远匹配不上，等于整个功能在默认视图下不工作。
+    全程没有报错，界面上看不出来。
+    """
+
+    account = "aggregate-sentinel-test"
+
+    def setUp(self):
+        app_module.app.dependency_overrides[app_module.get_current_user] = admin_user
+        self.client = TestClient(app_module.app)
+        self.bridge = FakeBridge([self.account], account_type="CREDIT").__enter__()
+        self._clean()
+
+    def tearDown(self):
+        self.bridge.__exit__(None, None, None)
+        self.client.close()
+        app_module.app.dependency_overrides.clear()
+        self._clean()
+
+    def _clean(self):
+        conn = app_module.get_db_connection()
+        conn.execute("DELETE FROM order_preferences WHERE account_id IN (?, 'ALL', 'all')",
+                     (self.account,))
+        conn.commit()
+        conn.close()
+
+    def _instrument(self, query):
+        return self.client.get(
+            "/api/instrument/600000.SH?%s" % query).json()["instrument"]
+
+    def test_the_sentinel_is_not_looked_up_as_an_account(self):
+        # 真账号问得到 CREDIT，哨兵值必须压根不去问 —— 否则查不到会退回 STOCK
+        self.assertEqual(
+            self._instrument("account_id=%s" % self.account)["account_type"], "CREDIT")
+        self.assertEqual(self._instrument("account_id=ALL")["account_type"], "STOCK")
+
+    def test_upper_and_lower_case_sentinels_agree(self):
+        upper = self._instrument("account_id=ALL")
+        lower = self._instrument("account_id=all")
+        blank = self._instrument("")
+        self.assertEqual(upper["trade_modes"], blank["trade_modes"])
+        self.assertEqual(lower["trade_modes"], blank["trade_modes"])
+
+    def test_a_real_accounts_preference_does_not_leak_into_the_aggregate_view(self):
+        conn = app_module.get_db_connection()
+        conn.execute(
+            "INSERT OR REPLACE INTO order_preferences "
+            "(username, account_id, side, trade_mode, price_type) VALUES (?,?,?,?,?)",
+            ("admin", self.account, "sell", "margin", "peer"))
+        conn.commit()
+        conn.close()
+        self.assertEqual(
+            self._instrument("account_id=%s&side=sell" % self.account)["default_price_type"],
+            "peer")
+        # 汇总视图不属于任何一个账号，不该借用其中某一个的习惯
+        self.assertEqual(
+            self._instrument("account_id=ALL&side=sell")["default_price_type"], "latest")
+
+
+class AggregateSentinelFrontendTests(unittest.TestCase):
+    """前端下单弹窗必须认得后端发的那个哨兵值。
+
+    上面那组测试守的是服务端，但 bug 的另一半在 vue-app.js：守卫写的是
+    `!== 'all'`，而它拿到的值是大写 'ALL'，于是哨兵被当成账号发了出去。
+    两个文件各自都「对」，错的是它们对不上 —— 所以这里直接测这个关系。
+    """
+
+    JS = (ROOT / "vue-app.js").read_text(encoding="utf-8")
+    PY = (ROOT / "app.py").read_text(encoding="utf-8")
+
+    def test_the_backend_still_emits_the_uppercase_sentinel(self):
+        # 前提变了这条会先红，提醒下面那条的假设已经不成立
+        self.assertIn("'ALL' as account_id", self.PY)
+
+    def test_the_dialog_does_not_send_the_aggregate_sentinel_as_an_account(self):
+        import re
+        match = re.search(
+            r"const loadOrderQuote = async \([^)]*\) => \{(.*?)\n        \};",
+            self.JS, re.S)
+        self.assertIsNotNone(match, "loadOrderQuote 没找到，函数被改名或改写了")
+        body = match.group(1)
+        guard = re.search(r"if \((.*?)\) \{\s*params\.set\('account_id'", body, re.S)
+        self.assertIsNotNone(guard, "account_id 的守卫没找到")
+        condition = guard.group(1)
+        # 后端给的是 'ALL'，选择器给的是 'all'，守卫必须两个都挡住
+        self.assertIn("toLowerCase()", condition,
+                      "守卫是大小写敏感的比较，大写 'ALL' 会漏过去")
+
+
 if __name__ == "__main__":
     unittest.main()
