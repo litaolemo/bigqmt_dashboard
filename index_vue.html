@@ -1086,19 +1086,21 @@
                                             <div style="text-align: center;">
                                                 <!-- 没有条件单时给空串而不是 0：el-badge 对 0 是
                                                      「显示这个 0」，给空串它才整个不渲染 -->
-                                                <el-badge :value="conditionalCountFor(row) || ''"
-                                                          :offset="[2, 6]">
-                                                    <el-button
-                                                        link
-                                                        :type="conditionalCountFor(row) ? 'warning' : 'info'"
-                                                        @click.stop="openConditionalDialog(row)"
-                                                        :title="conditionalCountFor(row) ? ('已挂 ' + conditionalCountFor(row) + ' 张条件单，点击新增') : '设置止损/止盈等条件单'"
-                                                        style="font-size: 16px;">
-                                                        <!-- 驼峰图标名必须走 :is：in-DOM 模板会把标签名小写成
-                                                             alarmclock，Vue 只会试 capitalize（Alarmclock），配不上 -->
-                                                        <el-icon><component :is="'AlarmClock'" /></el-icon>
-                                                    </el-button>
-                                                </el-badge>
+                                                <!-- 数量用行内小字，不用 el-badge：这版 Element Plus 的
+                                                     badge offset 不生效，角标默认往上顶半个身位，会被行边界
+                                                     裁掉半截。卖出/买入列的挂单数也是这么显示的。 -->
+                                                <el-button
+                                                    link
+                                                    :type="conditionalCountFor(row) ? 'warning' : 'info'"
+                                                    @click.stop="openConditionalDialog(row)"
+                                                    :title="conditionalCountFor(row) ? ('已挂 ' + conditionalCountFor(row) + ' 张条件单，点击新增') : '设置止损/止盈等条件单'"
+                                                    style="font-size: 16px;">
+                                                    <!-- 驼峰图标名必须走 :is：in-DOM 模板会把标签名小写成
+                                                         alarmclock，Vue 只会试 capitalize（Alarmclock），配不上 -->
+                                                    <el-icon><component :is="'AlarmClock'" /></el-icon>
+                                                    <span v-if="conditionalCountFor(row)"
+                                                          style="margin-left: 2px; font-size: 12px; font-weight: 800;">{{ conditionalCountFor(row) }}</span>
+                                                </el-button>
                                             </div>
                                         </template>
 

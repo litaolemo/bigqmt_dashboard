@@ -529,7 +529,7 @@ const app = createApp({
             { prop: 'sell_action', label: '卖出', width: '50', align: 'center' },
             { prop: 'buy_action', label: '买入', width: '50', align: 'center' },
             { prop: 't0_action', label: '做T', width: '50', align: 'center' },
-            { prop: 'conditional_action', label: '条件单', width: '58', align: 'center' },
+            { prop: 'conditional_action', label: '条件单', width: '68', align: 'center' },
             { prop: 'delete_action', label: '删除', width: '50', align: 'center' },
             { prop: 'instrument_name', label: '名称', minWidth: '100' },
             { prop: 'stock_code', label: '代码', width: '80' },
