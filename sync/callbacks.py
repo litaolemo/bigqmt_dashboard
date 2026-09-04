@@ -35,11 +35,17 @@ def _make_callback_class():
             self.account_id = account_id
 
         def on_stock_trade(self, trade):
-            """成交回报：立刻落库，面板下一次轮询就能看到真实成交。"""
+            """成交回报：立刻落库 + 推给正在看这个账号的浏览器 / 手机通知。
+
+            on_trade_event 只从这条实时路径触发，批量轮询（sync/poller.py）
+            不触发它——否则每次轮询把同一笔历史成交重新拉回来一遍，都会当成
+            「新成交」推一次，通知和浏览器推送都会重复刷屏。
+            """
             _bump(self.account_id, "trades")
             try:
                 row = adapters.trade_to_row(trade, self.account_id)
                 sinks.call("save_trades", self.account_id, [row])
+                sinks.call("on_trade_event", self.account_id, row)
             except Exception as e:
                 print(f"[回报] 账号 {self.account_id} 处理成交失败: {e}")
 

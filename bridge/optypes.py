@@ -36,6 +36,12 @@ _TABLE = (
 
 BY_KEY = {row[0]: row for row in _TABLE}
 
+# 反查表：某个已经落地成交/委托的 order_type 是买还是卖。表里的普通买卖(23/24)
+# 之外，信用账户的融资买入(27)/买券还券(29) 也是买方向，融券卖出(28)/卖券还款(31)
+# 是卖方向——成交回报里的 order_type 就是这几个数之一，不会是别的。
+_BUY_OP_TYPES = frozenset(row[3] for row in _TABLE)
+_SELL_OP_TYPES = frozenset(row[4] for row in _TABLE)
+
 # 两种账户的默认都是普通买卖：默认不能是会产生负债的那一条。
 # 账户类型没配或配了个不认识的值时按普通账户走，信用账户必须显式配 CREDIT。
 DEFAULT_MODE = {ACCOUNT_STOCK: "normal", ACCOUNT_CREDIT: "normal"}
@@ -100,3 +106,19 @@ def resolve(trade_mode, account_type, side):
             % (row[1], "/".join(row[2]), kind))
     order_type = row[3] if side == SIDE_BUY else row[4]
     return order_type, _as_dict(row, side)
+
+
+def side_of(order_type):
+    """已经落地的 order_type（成交/委托回报里的那个数）是买还是卖。
+
+    认不出来（不在这张表里）返回 ""——不猜，交给调用方决定怎么显示未知方向。
+    """
+    try:
+        value = int(order_type)
+    except (TypeError, ValueError):
+        return ""
+    if value in _BUY_OP_TYPES:
+        return SIDE_BUY
+    if value in _SELL_OP_TYPES:
+        return SIDE_SELL
+    return ""

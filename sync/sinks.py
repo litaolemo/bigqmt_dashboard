@@ -13,6 +13,7 @@ _SINKS = {
     "save_orders": None,
     "is_trading_session": None,
     "on_order_event": None,     # 委托状态变化（含废单原因）
+    "on_trade_event": None,     # 实时成交回报（只有回调路径会触发，批量轮询不触发）
 }
 
 _LOCK = threading.RLock()

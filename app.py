@@ -1,4 +1,5 @@
-from fastapi import FastAPI, Request, Query, HTTPException, Depends
+from fastapi import (FastAPI, Request, Query, HTTPException, Depends,
+                     WebSocket, WebSocketDisconnect)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -24,6 +25,7 @@ import pandas as pd
 import concurrent.futures
 import requests
 import asyncio
+import queue
 
 import os
 
@@ -39,15 +41,24 @@ from bridge import instruments
 from bridge import market as bridge_market
 from bridge import orders as bridge_orders
 from bridge import pool as bridge_pool
+from bridge import repo as bridge_repo
 from sync import callbacks as sync_callbacks
 from sync import poller as sync_poller
 from sync import sinks as sync_sinks
+from sync import ws_hub
 
 # 可转债
 from cb import ipo as cb_ipo
 from cb import metrics as cb_metrics
 from cb import reference as cb_reference
 from cb import service as cb_service
+
+# 通知：企业微信 / Server酱，缺配置就整体降级成打日志
+from plugins import notify as notify_plugin
+
+# 条件单（止损/止盈）触发引擎
+from triggers import store as trigger_store
+from triggers import engine as trigger_engine
 
 # 全局行情缓存
 GLOBAL_MARKET_MIN_DATA = {}
@@ -597,6 +608,7 @@ def init_db():
         is_stopped INTEGER DEFAULT 0,
         buy_stopped INTEGER DEFAULT 0,
         sell_stopped INTEGER DEFAULT 0,
+        reverse_repo_enabled INTEGER DEFAULT 0,
         stopped_at TIMESTAMP,
         resumed_at TIMESTAMP,
         update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -610,6 +622,11 @@ def init_db():
         pass
     try:
         cursor.execute('ALTER TABLE trading_status ADD COLUMN sell_stopped INTEGER DEFAULT 0')
+    except Exception:
+        pass
+    try:
+        cursor.execute(
+            'ALTER TABLE trading_status ADD COLUMN reverse_repo_enabled INTEGER DEFAULT 0')
     except Exception:
         pass
     # 迁移旧数据: is_stopped=1 的行补齐 buy_stopped/sell_stopped
@@ -940,33 +957,41 @@ def has_active_user(window_seconds=180):
     return (time.time() - _LAST_AUTH_TS["ts"]) < window_seconds
 
 
-# 验证用户并获取当前用户
-async def get_current_user(token: str = Depends(oauth2_scheme)):
-    credentials_exception = HTTPException(
-        status_code=401,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    
-    # 首先尝试从数据库验证 session
+def resolve_user_from_token(token):
+    """token → user dict，认不出来返回 None（不抛异常）。
+
+    get_current_user 和 WebSocket 端点共用这段逻辑：WebSocket 握手走的是
+    查询串带 token，不是 Authorization 头，没法直接用 oauth2_scheme 依赖，
+    所以这里拆成一个普通函数，两边各自决定认不出来时该怎么办。
+    """
+    if not token:
+        return None
     username = verify_user_session(token)
-    
     if not username:
-        # 如果数据库没有，再尝试 JWT 解码验证（作为备份或兼容性处理）
         try:
             payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
             if payload.get("type") == "viewer":   # 观察者令牌不得访问任何账户接口
-                raise credentials_exception
-            username: str = payload.get("sub")
+                return None
+            username = payload.get("sub")
             if username is None:
-                raise credentials_exception
+                return None
         except JWTError:
-            raise credentials_exception
-            
+            return None
     user = get_user(username=username)
+    if user is not None:
+        _LAST_AUTH_TS["ts"] = time.time()   # 标记有用户在线（供实时行情任务判断）
+    return user
+
+
+# 验证用户并获取当前用户
+async def get_current_user(token: str = Depends(oauth2_scheme)):
+    user = resolve_user_from_token(token)
     if user is None:
-        raise credentials_exception
-    _LAST_AUTH_TS["ts"] = time.time()   # 标记有用户在线（供实时行情任务判断）
+        raise HTTPException(
+            status_code=401,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     return user
 
 # 验证是否为管理员
@@ -3419,6 +3444,10 @@ def start_background_tasks():
     start_bridge_tasks()
     # 14. 可转债参考数据日更 + 打新债
     threading.Thread(target=cb_daily_task, daemon=True, name="cb-daily").start()
+    # 15. 条件单（止损/止盈）触发引擎
+    trigger_engine.start()
+    # 16. 收盘前自动国债逆回购（默认关闭，账号自己在设置里开）
+    threading.Thread(target=reverse_repo_task, daemon=True, name="reverse-repo").start()
 
 
 def cb_daily_task():
@@ -3444,6 +3473,35 @@ def cb_daily_task():
             print(f"[打新债] 执行失败: {e}")
 
         time.sleep(600)
+
+
+def reverse_repo_enabled_for(account_id):
+    """该账号是否开了自动国债逆回购。给 bridge/repo.py 当 enabled_for 用。"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT reverse_repo_enabled FROM trading_status WHERE account_id = ?',
+                   (account_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return bool(row and row[0])
+
+
+def reverse_repo_task():
+    """收盘前后跑一次自动国债逆回购。
+
+    窗口比 cb_daily_task 的 600 秒轮询窄得多（15:00-15:05，6 分钟），所以是
+    单独一个循环，30 秒查一次；同一窗口内查到好几次也没事，
+    bridge.repo.run_once() 自己保证每个账号每个自然日最多真出借一次。
+    """
+    while True:
+        try:
+            now = datetime.now()
+            hm = now.hour * 100 + now.minute
+            if 1500 <= hm <= 1505 and is_trading_session():
+                bridge_repo.run_once(enabled_for=reverse_repo_enabled_for)
+        except Exception as e:
+            print(f"[逆回购] 定时任务出错: {e}")
+        time.sleep(30)
 
 
 def start_bridge_tasks():
@@ -3815,6 +3873,7 @@ def startup_trading_day_check():
             is_stopped INTEGER DEFAULT 0,
             buy_stopped INTEGER DEFAULT 0,
             sell_stopped INTEGER DEFAULT 0,
+            reverse_repo_enabled INTEGER DEFAULT 0,
             stopped_at TIMESTAMP,
             resumed_at TIMESTAMP,
             update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -3827,6 +3886,11 @@ def startup_trading_day_check():
             pass
         try:
             cursor.execute('ALTER TABLE trading_status ADD COLUMN sell_stopped INTEGER DEFAULT 0')
+        except Exception:
+            pass
+        try:
+            cursor.execute(
+                'ALTER TABLE trading_status ADD COLUMN reverse_repo_enabled INTEGER DEFAULT 0')
         except Exception:
             pass
         # 迁移旧数据: is_stopped=1 的行补齐 buy_stopped/sell_stopped
@@ -4668,14 +4732,48 @@ async def get_trading_status(account_id: str, current_user: dict = Depends(get_c
 
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('SELECT is_stopped, buy_stopped, sell_stopped, stopped_at FROM trading_status WHERE account_id = ?', (account_id,))
+    cursor.execute('SELECT is_stopped, buy_stopped, sell_stopped, stopped_at, reverse_repo_enabled '
+                   'FROM trading_status WHERE account_id = ?', (account_id,))
     row = cursor.fetchone()
     conn.close()
 
     if row:
-        return {"account_id": account_id, "is_stopped": bool(row[0]), "buy_stopped": bool(row[1]), "sell_stopped": bool(row[2]), "stopped_at": row[3]}
+        return {"account_id": account_id, "is_stopped": bool(row[0]), "buy_stopped": bool(row[1]),
+               "sell_stopped": bool(row[2]), "stopped_at": row[3],
+               "reverse_repo_enabled": bool(row[4])}
     else:
-        return {"account_id": account_id, "is_stopped": False, "buy_stopped": False, "sell_stopped": False, "stopped_at": None}
+        return {"account_id": account_id, "is_stopped": False, "buy_stopped": False,
+               "sell_stopped": False, "stopped_at": None, "reverse_repo_enabled": False}
+
+
+@app.post("/api/account/reverse-repo")
+async def set_reverse_repo_endpoint(command: CommandCreate,
+                                    current_user: dict = Depends(get_current_user)):
+    """开关账号的自动国债逆回购。command_data 是 "on" / "off"。
+
+    收盘前台账户里没花完的闲置现金按当日最优年化利率（深市 131810 / 沪市
+    204001 挑高的那个）出借一晚，见 bridge/repo.py。默认关闭，开了才会跑。
+    """
+    if current_user["role"] != "admin" and current_user["account_id"] != command.account_id:
+        raise HTTPException(status_code=403, detail="没有权限对此账号下发指令")
+    if command.command_data not in ("on", "off"):
+        raise HTTPException(status_code=400, detail='command_data 必须是 "on" 或 "off"')
+
+    enabled = 1 if command.command_data == "on" else 0
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO trading_status (account_id, is_stopped, buy_stopped, sell_stopped, reverse_repo_enabled)
+        VALUES (?, 0, 0, 0, ?)
+        ON CONFLICT(account_id) DO UPDATE SET
+            reverse_repo_enabled = excluded.reverse_repo_enabled,
+            update_time = CURRENT_TIMESTAMP
+    ''', (command.account_id, enabled))
+    conn.commit()
+    conn.close()
+    return {"status": "success",
+           "message": "账号 %s 自动逆回购已%s" % (command.account_id, "开启" if enabled else "关闭"),
+           "reverse_repo_enabled": bool(enabled)}
 
 
 # 下发一键清仓指令
@@ -8345,6 +8443,105 @@ async def get_order_audit_endpoint(
     return {"status": "success", "records": get_order_audit(account_id or None, limit)}
 
 
+class ConditionalOrderCommand(BaseModel):
+    account_id: str
+    stock_code: str
+    # stop_loss / take_profit / buy_dip / buy_breakout / limit_up_break / limit_up_buy
+    trigger_type: str
+    # 普通类型二选一：给绝对价格，或者给涨跌幅百分比（8 表示 8%，方向由
+    # trigger_type 决定，不用给负数）。limit_up_break / limit_up_buy 两个都不填——
+    # 触发价是当天动态算出的涨停价。
+    trigger_price: float = 0.0
+    trigger_pct: float = 0.0
+    volume: int = 0            # 卖出方向可以用 percentage 代替
+    percentage: int = 0        # 仅卖出方向：占触发时可用持仓的百分比
+    price_type: str = "peer"   # 触发后用哪种报价方式下单，默认对手方最优
+    trade_mode: str = ""       # 买卖指令类型，留空按账户类型取默认
+    remark: str = ""
+
+
+_CONDITIONAL_TRIGGER_LABELS = {
+    "stop_loss": "止损", "take_profit": "止盈",
+    "buy_dip": "条件买入（下探）", "buy_breakout": "条件买入（突破）",
+    "limit_up_break": "涨停破板卖出", "limit_up_buy": "涨停买入",
+}
+
+
+@app.post("/api/conditional-orders")
+async def create_conditional_order_endpoint(
+    command: ConditionalOrderCommand,
+    current_user: dict = Depends(get_current_user)
+):
+    """新建条件单（止损/止盈/条件买入）。
+
+    这里只负责登记条件；条件满足时由后台触发引擎（triggers/engine.py）真的
+    下单，走的是和手动下单同一条 bridge_orders.place_order 链路，风控/价格
+    笼子/审计一个都不少——条件单不是绕过风控的后门。
+    """
+    is_admin = current_user["role"] == "admin"
+    if not is_admin and command.account_id != current_user["account_id"]:
+        raise HTTPException(status_code=403, detail="只能为自己的账号设置条件单")
+    if is_display_mode():
+        raise HTTPException(status_code=403, detail="展示模式下不能下单")
+
+    operator = current_user.get("username") or current_user.get("account_id") or ""
+    code = instruments.normalize_code(command.stock_code)
+    try:
+        order_id = trigger_store.create(
+            account_id=command.account_id, stock_code=code,
+            trigger_type=command.trigger_type,
+            trigger_price=command.trigger_price or None,
+            trigger_pct=command.trigger_pct or None,
+            volume=command.volume, percentage=command.percentage,
+            price_type=command.price_type, trade_mode=command.trade_mode,
+            operator=operator, remark=command.remark,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"status": "success", "id": order_id, "message": "条件单已创建"}
+
+
+@app.get("/api/conditional-orders")
+async def list_conditional_orders_endpoint(
+    account_id: str = Query("", description="账号ID，留空或 all 表示全部（仅管理员生效）"),
+    include_inactive: bool = Query(False, description="是否包含已触发/已撤/失败的历史记录"),
+    limit: int = Query(200, ge=1, le=1000),
+    current_user: dict = Depends(get_current_user)
+):
+    if current_user["role"] != "admin":
+        account_id = current_user["account_id"]
+    rows = (trigger_store.list_all(account_id or None, limit) if include_inactive
+           else trigger_store.list_active(account_id or None))
+    for row in rows:
+        row["unit"] = instruments.unit_name(row["stock_code"])
+        row["side_label"] = "卖出" if row["side"] == "sell" else "买入"
+        row["trigger_label"] = _CONDITIONAL_TRIGGER_LABELS.get(
+            row["trigger_type"], row["trigger_type"])
+    return {"status": "success", "orders": rows, "count": len(rows)}
+
+
+class CancelConditionalOrderRequest(BaseModel):
+    id: int
+
+
+@app.post("/api/conditional-orders/cancel")
+async def cancel_conditional_order_endpoint(
+    payload: CancelConditionalOrderRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    is_admin = current_user["role"] == "admin"
+    row = trigger_store.get(payload.id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="条件单不存在")
+    if not is_admin and row["account_id"] != current_user["account_id"]:
+        raise HTTPException(status_code=403, detail="只能撤自己账号的条件单")
+    ok = trigger_store.cancel(payload.id,
+                              account_id=None if is_admin else current_user["account_id"])
+    if not ok:
+        raise HTTPException(status_code=400, detail="撤销失败：可能已经触发/撤过/失效")
+    return {"status": "success", "message": "已撤销"}
+
+
 @app.get("/api/accounts/health")
 async def get_accounts_health(current_user: dict = Depends(get_current_admin)):
     """各账号的大QMT 连接状态：在线、往返延迟、最后一次同步结果。"""
@@ -8360,7 +8557,99 @@ async def get_accounts_health(current_user: dict = Depends(get_current_admin)):
         "quote_account_id": bridge_config.quote_account_id(),
         "accounts": accounts,
         "callback_stats": sync_callbacks.stats(),
+        "daily_action_limit": {
+            "count": bridge_orders.daily_action_count(),
+            "limit": bridge_orders.DAILY_ACTION_LIMIT,
+            "tripped": bridge_orders.daily_action_count() >= bridge_orders.DAILY_ACTION_LIMIT,
+        },
     }
+
+
+@app.post("/api/admin/reset-daily-action-count")
+async def reset_daily_action_count_endpoint(current_user: dict = Depends(get_current_admin)):
+    """手动复位全局熔断计数。用在排查清楚触发原因、确认可以继续交易之后。"""
+    bridge_orders.reset_daily_action_count()
+    return {"status": "success", "message": "已复位"}
+
+
+# q.get 每次最多阻塞这么久就重新检查一轮——不是消息节流，是让"客户端断线"能
+# 在至多一个轮询周期内被发现，而不是卡在一次长阻塞里出不来。
+_WS_POLL_SECONDS = 1.0
+# 这么久没有真实消息就发一个 ping 保活/探活，不代表「没心跳就当空闲」——
+# 真正的事件是随到随发的，不等这个间隔。
+_WS_IDLE_PING_SECONDS = 25
+
+
+@app.websocket("/ws/updates")
+async def ws_updates(websocket: WebSocket):
+    """账号级实时推送：委托状态变化、真实成交、条件单触发。
+
+    浏览器原生 WebSocket API 发起连接时设不了 Authorization 头，所以 token
+    走查询串：/ws/updates?token=...&account_id=...。account_id 留空或传
+    "all" 只有管理员放行（订阅全部账号），普通用户被强制收窄成自己的账号——
+    和 /api/trade-flow 里「请求里写了别人的账号，服务端强制改回自己的」同一个道理。
+
+    推送的消息只带 {type, account_id, data}，不是完整状态——浏览器收到后应该
+    直接重新拉一次对应接口，见 sync/ws_hub.py 顶部的说明。
+
+    **两个并发协程，不是一个循环。** ws_hub 的队列是给别的线程用的，读它必须
+    用 asyncio.to_thread 那样的阻塞调用；但阻塞调用没法配合取消——如果只有
+    一个循环，"客户端断线" 这件事要等阻塞的 q.get 超时（原来是 25 秒）才能
+    发现，这段时间里连接和它订阅的队列都占着资源不放。所以拆成 pump_messages
+    （读队列、发消息，超时设短，最多卡 1 秒）和 watch_disconnect（专门等
+    WebSocketDisconnect）两个协程一起跑，谁先结束就说明该收摊了。
+    """
+    token = websocket.query_params.get("token") or ""
+    user = resolve_user_from_token(token)
+    if user is None:
+        await websocket.close(code=4401)
+        return
+
+    requested = (websocket.query_params.get("account_id") or "").strip()
+    is_admin = user.get("role") == "admin"
+    if requested in ("", "all", ws_hub.ALL_ACCOUNTS) and is_admin:
+        channel = ws_hub.ALL_ACCOUNTS
+    else:
+        channel = requested if is_admin else (user.get("account_id") or "")
+        if not channel:
+            await websocket.close(code=4403)
+            return
+
+    await websocket.accept()
+    subscribed_channel, q = ws_hub.subscribe(channel)
+
+    async def pump_messages():
+        idle_seconds = 0.0
+        while True:
+            try:
+                message = await asyncio.to_thread(q.get, True, _WS_POLL_SECONDS)
+            except queue.Empty:
+                idle_seconds += _WS_POLL_SECONDS
+                if idle_seconds >= _WS_IDLE_PING_SECONDS:
+                    idle_seconds = 0.0
+                    await websocket.send_json({"type": "ping"})
+                continue
+            idle_seconds = 0.0
+            await websocket.send_json(message)
+
+    async def watch_disconnect():
+        # 浏览器端不主动往这个连接发东西——这个循环唯一的作用是第一时间等到
+        # WebSocketDisconnect，别的什么都不用做。
+        while True:
+            await websocket.receive_text()
+
+    pumper = asyncio.ensure_future(pump_messages())
+    watcher = asyncio.ensure_future(watch_disconnect())
+    try:
+        await asyncio.wait({pumper, watcher}, return_when=asyncio.FIRST_COMPLETED)
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        print(f"[推送] WebSocket 连接异常退出: {e}")
+    finally:
+        for task in (pumper, watcher):
+            task.cancel()
+        ws_hub.unsubscribe(subscribed_channel, q)
 
 
 @app.get("/api/instrument/{stock_code}")
@@ -8589,15 +8878,41 @@ def position_factor_of(account_id):
         return 1.0
 
 
+def _handle_order_event(account_id, row):
+    """委托状态变化：只推给正在看这个账号的浏览器，不发手机通知——太频繁。"""
+    ws_hub.publish(account_id, "order", row)
+
+
+def _handle_trade_event(account_id, row):
+    """真实成交：推给浏览器 + 发手机通知。只有实时回调路径会触发这个 sink，
+    批量轮询不会——不然每次轮询把同一笔历史成交拉回来都会当新成交推一遍。
+    """
+    ws_hub.publish(account_id, "trade", row)
+    side = bridge_orders.optypes.side_of(row.get("order_type") or row.get("direction"))
+    side_label = {"buy": "买入", "sell": "卖出"}.get(side, "成交")
+    code = row.get("stock_code") or ""
+    name = row.get("instrument_name") or code
+    volume = row.get("traded_volume") or 0
+    price = row.get("traded_price") or 0
+    unit = instruments.unit_name(code)
+    alias = (get_user_by_account_id(account_id) or {}).get("alias") or account_id
+    notify_plugin.notify(
+        "成交：%s %s" % (name, side_label),
+        "%s（%s）%s %s%s @ %s" % (alias, code, side_label, volume, unit, price))
+
+
 dbaccess.register(get_db_connection)
 bridge_orders.register_risk_gate(order_risk_gate)
 bridge_orders.register_audit_sink(save_order_audit)
+trigger_engine.register_hooks(get_available_volume=live_position, notify=notify_plugin.notify)
 sync_sinks.register(
     save_positions=save_positions,
     save_asset=save_asset,
     save_trades=save_trades,
     save_orders=save_orders,
     is_trading_session=is_trading_session,
+    on_order_event=_handle_order_event,
+    on_trade_event=_handle_trade_event,
 )
 
 

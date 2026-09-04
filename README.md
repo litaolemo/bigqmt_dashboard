@@ -2,7 +2,7 @@
 
 **大QMT 直连的多账号持仓监控与下单面板。** 浏览器里看持仓、资金曲线、买卖流水，点一下就把单子报进大QMT —— 没有客户端脚本、没有指令队列、没有轮询延迟。
 
-<sub>FastAPI + Vue3 · SQLite · MIT · 交易通道走 [xtquant_big_convert](https://github.com/litaolemo/xtquant_big_convert)</sub>
+<sub>FastAPI + Vue3 · SQLite · MIT · 交易通道走 [xtquant_big_convert](https://github.com/litaolemo/xtquant_big_convert) · [更新日志](CHANGELOG.md)</sub>
 
 ---
 
@@ -29,6 +29,11 @@
 | **未成交与撤单** | 买卖流水上方列出报了还没成的委托（已报/部成/废单…），可直接撤单 |
 | **服务端风控** | 停买/停卖/锁仓/仓位系数/展示模式，判定不过就不会有报单 —— 不是给客户端的建议值 |
 | **可转债** | 10 张步进与 0.001 报价精度、溢价率/转股价值/双低、强赎进度与禁买闸门、打新债 |
+| **条件单** | 止损/止盈/条件买入/涨停破板卖出/涨停买入，6 种触发类型；服务端每 5 秒查一次价，越过触发线就走正常下单链路真的报单（API 已完成，前端界面开发中，见[条件单](#条件单)） |
+| **实时推送** | WebSocket 把委托状态变化、真实成交、条件单触发秒级推给浏览器，取代原来几秒一次的轮询 |
+| **通知** | 成交、条件单触发/失败推送到企业微信群机器人或 Server 酱（可选） |
+| **全局熔断** | 一天内买卖撤单合计超过阈值（默认 2000）自动拒绝，防的是软件自己失控 |
+| **国债逆回购** | 收盘前自动把闲置现金出借（深市 131810 / 沪市 204001 挑利率高的），按账号开关，默认关闭 |
 | **委托与留痕** | 活动委托视图、下单审计流水（谁、何时、下了什么、成没成、失败原因） |
 | **多账号** | 每账号独立连接，可连不同机器上的大QMT；传输方式由配置决定 |
 | **观察者** | 独立的只读账号体系，只看得到买卖流水，与交易账号互不相干 |
@@ -73,9 +78,9 @@ tooltip 里说明原因，不会拿缺失的转股价凑一个看起来像模像
 ### 项目现状
 
 - 只读链路（持仓/资产/委托/成交/行情/实时回报）已在实盘账号上跑通并逐字段对过账。
-- 200 个测试，不需要 QMT 也不需要任何密钥就能跑；下单链路用测试替身，风控与数量规整跑的是真实代码。
+- 350 个测试，不需要 QMT 也不需要任何密钥就能跑；下单链路用测试替身，风控与数量规整跑的是真实代码。
 - 品种规则（最小申报量、步进、报价精度）与大QMT 自己的合约数据交叉验证过。
-- **做T执行引擎尚未包含**，详见[尚未包含](#尚未包含)。
+- **条件单/通知/国债逆回购的前端界面还没做**，目前只能通过 API 直接调用；**做T执行引擎尚未包含**。详见[尚未包含](#尚未包含)。
 
 本项目由一套更早的「推送式」面板改造而来，那套的数据入口和指令队列已整体移除。
 
@@ -94,11 +99,14 @@ tooltip 里说明原因，不会拿缺失的转股价凑一个看起来像模像
 
 ```
                     ┌──────────────────────────────────────────┐
-   浏览器 (Vue3)  ──▶│  FastAPI                                 │
-                    │   ├─ bridge/  账号 → 连接池、下单、行情    │──RPC──▶ 大QMT 机器 A
+   浏览器 (Vue3)  ◀─▶│  FastAPI                                 │
+   WebSocket 推送 ◀──│   ├─ bridge/  账号 → 连接池、下单、行情    │──RPC──▶ 大QMT 机器 A
                     │   ├─ sync/    轮询拉取 + 实时成交回报      │──RPC──▶ 大QMT 机器 B
+                    │   │           + ws_hub 浏览器推送中枢      │
+                    │   ├─ triggers/ 条件单存储 + 触发引擎       │
                     │   ├─ cb/      可转债参考数据与指标         │
-                    │   └─ plugins/ Tushare / MySQL / 代理(可选) │
+                    │   └─ plugins/ Tushare / MySQL / 代理 /     │
+                    │               通知(企业微信·Server酱)(可选)│
                     │  SQLite dashboard.db                      │
                     └──────────────────────────────────────────┘
 ```
@@ -223,6 +231,8 @@ DASHBOARD_DB_PATH=demo.db python app.py
 | 记录板同步 | `MYSQL_*` 或 `config/mysql_sync.json` | 研究记录板只存本地 SQLite |
 | 东财代理 | `config/proxy.json` | 直连东财；被封时转债比价表补不上转股价 |
 | 大模型 | 管理页「大模型配置」 | 记录板退回按分号拆分的规则解析 |
+| 通知 | `WECOM_WEBHOOK_URL` / `SERVERCHAN_KEY` 或 `config/notify.json` | 成交、条件单触发/失败只打日志，不推送到手机 |
+| 熔断阈值 | `DAILY_ACTION_LIMIT`（默认 2000） | 用默认值 |
 
 ---
 
@@ -259,6 +269,71 @@ DASHBOARD_DB_PATH=demo.db python app.py
 **打新债**：`cb/ipo.py`，交易日开盘后自动申购。**默认 dry-run**，要真申购得在账号配置里显式打开 `"ipo_subscribe": true` + `"ipo_live": true`，并且账号本身 `allow_order`。
 
 **转股价数据**：主源是 akshare `bond_zh_cov`，实测只覆盖约三成的券；缺的用比价表 `bond_cov_comparison` 补（这个接口在机房 IP 上常被东财掐，所以走 `config/proxy.json` 的隧道），再缺就问大QMT 的合约详情要。三层都拿不到时，溢价率相关字段返回 `null`，前端显示「—」并在 tooltip 里说明原因 —— 不会拿缺失的转股价凑一个看起来像模像样的数出来。`GET /api/cb` 的 `coverage` 字段能看到当前覆盖率。
+
+---
+
+## 条件单
+
+> **目前只有 API，前端界面还没做**——下单弹窗、条件单列表、撤销按钮都待实现。想用的话现在得直接调接口。
+
+后台线程每 5 秒（没有活跃条件单时拉长到 30 秒）查一次价，越过触发线就调用和手动下单**同一条** `bridge/orders.py` 链路——风控闸门、价格笼子、审计流水、买卖指令类型一个都不少，条件单不是绕过风控的后门。
+
+| 类型 | 方向 | 触发条件 |
+|---|---|---|
+| `stop_loss` 止损 | 卖 | 价格 ≤ 触发价 |
+| `take_profit` 止盈 | 卖 | 价格 ≥ 触发价 |
+| `buy_dip` 条件买入（下探） | 买 | 价格 ≤ 触发价 |
+| `buy_breakout` 条件买入（突破） | 买 | 价格 ≥ 触发价 |
+| `limit_up_break` 涨停破板卖出 | 卖 | 当日最高价碰过涨停价，随后价格又跌破涨停价 |
+| `limit_up_buy` 涨停买入（封板抢排单） | 买 | 价格触及当日涨停价 |
+
+后两种的"触发价"是当天动态算出来的涨停价，创建时不用也不能填——每天的涨跌停都不一样，写死一个数字没有意义。
+
+**触发价怎么给**（普通四种类型，二选一）：
+- `trigger_price`：绝对价格。
+- `trigger_pct`：涨跌幅百分比（填 `8` 表示 8%，不用给负数——方向由类型本身决定：`stop_loss`/`buy_dip` 是跌、`take_profit`/`buy_breakout` 是涨）。创建那一刻按当时的昨收价换算成绝对价格存下，之后不会跟着每天的昨收重新算。
+
+**数量怎么给**：`volume`（固定股数/张数）或 `percentage`（仅卖出方向，触发那一刻按可用持仓的百分比现算，含 100% 清仓）。
+
+**报价方式**：只能用市价类（`peer`/`mine`/`stop`/`latest` 等），不支持 `fix` 这类需要单独委托价的类型——条件单只存了触发价，触发时用它去挂限价单可能早就不是合理价格了。
+
+**触发后的状态流转**：`active` → 抢占下单权（`submitting`，防止落库那一步万一失败导致同一条件被重复触发）→ 成功则 `triggered`（记下 `order_sys_id`，后续成没成交看正常的委托/成交记录）；下单被拒则退回 `active` 留着下一轮重试（条件仍然成立，不能因为一次失败就默默撤防），只是重试失败的通知有 5 分钟冷却，不会每 5 秒炸一次手机；卖出方向触发时如果可用持仓已经是 0，直接判 `failed`（终态，仓位都没了，保护对象已经不存在，重试没有意义）。
+
+| 接口 | 说明 |
+|---|---|
+| `POST /api/conditional-orders` | 新建。`account_id` / `stock_code` / `trigger_type` 必填，其余见上 |
+| `GET /api/conditional-orders` | 列出。默认只看 `active`，带 `include_inactive=true` 看历史 |
+| `POST /api/conditional-orders/cancel` | 撤销一条还没触发的 |
+
+## 实时推送
+
+`GET /ws/updates?token=...&account_id=...`——WebSocket，浏览器原生 API 设不了请求头，token 走查询串。`account_id` 留空或 `all` 只有管理员放行（订阅全部账号），普通用户会被强制收窄成自己的账号。
+
+推送的消息只带 `{type, account_id, data}`（`type` 是 `order` / `trade` / `conditional_order`），不是完整状态——前端收到后应该直接重新拉一次对应接口，比在浏览器里维护一份增量合并状态更不容易出错。空闲 25 秒会收到一条 `{"type": "ping"}` 保活。
+
+## 通知
+
+成交、条件单触发/失败会推送到企业微信群机器人和/或 Server 酱（配了哪个发哪个，两个都配就都发）。委托状态变化（已报/部成这类）不推送——太频繁，只走上面的 WebSocket。渠道配置见[「其余都是可选的」](#其余都是可选的)。
+
+## 国债逆回购
+
+收盘前 15:00-15:05 的窗口内，给每个开了开关的账号出借一次闲置现金：查可用资金、比较深市 131810.SZ 和沪市 204001.SH 的最新价（这两个品种的价格数值就是年化利率），挑高的那个卖出对应数量。走的是 `trader.order_stock_result` 直连调用，不经过 `bridge/orders.py` 的股票取整规则——逆回购的最小/步进单位和股票完全不是一回事，套错了会让金额算错，但仍然遵守同一条全局熔断和账号的 `allow_order` 开关。
+
+默认关闭，按账号开：
+
+| 接口 | 说明 |
+|---|---|
+| `POST /api/account/reverse-repo` | `command_data: "on"` / `"off"` |
+| `GET /api/account/trading-status` | 返回值里的 `reverse_repo_enabled` 字段 |
+
+## 全局熔断
+
+一天内买卖撤单合计次数超过阈值（`DAILY_ACTION_LIMIT`，默认 2000）自动拒绝所有后续下单/撤单请求，防的是软件自己失控——脚本死循环、条件单反复误触发之类。只在真的要碰交易所之前计数，被更早的校验或风控拦下的请求不算数。按自然日计数，进程重启会清零。
+
+| 接口 | 说明 |
+|---|---|
+| `GET /api/accounts/health` | 返回值里的 `daily_action_limit` 字段：`count` / `limit` / `tripped` |
+| `POST /api/admin/reset-daily-action-count` | 手动复位，仅管理员 |
 
 ---
 
@@ -315,6 +390,20 @@ DASHBOARD_DB_PATH=demo.db python app.py
 | `GET /api/cb-ipo/pending` | 今日可申购新债 |
 | `POST /api/cb-ipo/subscribe` | 手动打新债，默认 dry-run |
 
+### 条件单 / 推送 / 通知 / 逆回购 / 熔断
+
+详见各自的章节：[条件单](#条件单)、[实时推送](#实时推送)、[通知](#通知)、[国债逆回购](#国债逆回购)、[全局熔断](#全局熔断)。
+
+| 接口 | 说明 |
+|---|---|
+| `POST /api/conditional-orders` | 新建条件单 |
+| `GET /api/conditional-orders` | 列出条件单 |
+| `POST /api/conditional-orders/cancel` | 撤销条件单 |
+| `GET /ws/updates` | WebSocket 实时推送 |
+| `POST /api/account/reverse-repo` | 开关自动国债逆回购 |
+| `GET /api/accounts/health` | 含熔断计数 `daily_action_limit` |
+| `POST /api/admin/reset-daily-action-count` | 复位熔断计数（管理员） |
+
 ### 其余
 
 持仓/资产/曲线/交易日历/研究记录板/用户管理等接口沿用原有形状，`GET /api/data` 的持仓行现在多了 `is_bond` 和 `bond` 字段。
@@ -328,19 +417,28 @@ app.py              FastAPI 应用与路由
 bridge/             大QMT 直连
   config.py           账号 → 连接参数
   pool.py             account_id → 连接实例、探活
-  orders.py           唯一下单出口，风控闸门在这里
+  orders.py           唯一下单出口，风控闸门 + 全局熔断在这里
+  optypes.py          买卖指令类型（普通/融资融券）
+  pricetypes.py       选价类型全表，按交易所过滤
+  pricecage.py        价格笼子
   market.py           行情（全局共用一条连接）
   instruments.py      品种识别与下单规整
+  repo.py             国债逆回购自动出借
 sync/               账户数据同步
   poller.py           按账号轮询拉取
   callbacks.py        大QMT 推来的实时委托/成交回报
   adapters.py         桥接层对象 → 落库格式
+  ws_hub.py            浏览器端实时推送的发布/订阅中枢
+triggers/           条件单
+  store.py             存储层（建表、增删查、状态流转）
+  engine.py            触发引擎（后台线程查价、下单）
 cb/                 可转债
   reference.py        转股价/正股/申购信息（日更缓存）
   metrics.py          溢价率/转股价值/双低/强赎（纯计算）
   service.py          参考数据 + 实时行情 + 指标
   ipo.py              打新债
 plugins/            可选外部数据源，缺配置自动降级
+  notify.py            企业微信 / Server 酱通知
 tools/              seed_demo_data.py（造演示库）、查库脚本
 docs/screenshots/   README 用的截图
 ```
@@ -358,6 +456,8 @@ python -m pytest tests/ -q
 ---
 
 ## 尚未包含
+
+**条件单 / 通知 / 国债逆回购的前端界面。** 后端和 API 都已完成并测试，但下单弹窗、条件单列表、通知渠道配置页、逆回购开关目前都只能通过接口直接调用，面板上还点不到。
 
 **做T执行引擎。** 面板上的做T开关现在只写服务端状态（`t0_status` 表），`GET /api/t0-scan` 能算出机会行，但**没有自动执行**。原来的择时逻辑跑在 QMT 端脚本里，不在本仓库，直连后这段没有归宿。要恢复自动做T，需要把择时规则（B 点算法、回转比例、当日次数上限、冷却时间）实现进 `t0/engine.py`。
 

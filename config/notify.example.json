@@ -1,0 +1,5 @@
+{
+  "_note": "关键事件推送到手机的可选插件。两个渠道都是免费、不用自建服务的：企业微信群机器人（建个群加个机器人拿 webhook 地址）、Server 酱（微信扫码登录 sct.ftqq.com 拿 sendkey）。复制为 config/notify.json 并至少填一个；两个都留空则只打日志不发送。也可以用环境变量 WECOM_WEBHOOK_URL / SERVERCHAN_KEY，优先级更高。",
+  "wecom_webhook": "",
+  "serverchan_key": ""
+}

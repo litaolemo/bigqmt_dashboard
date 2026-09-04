@@ -10,6 +10,7 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from fastapi.testclient import TestClient
 
@@ -17,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import app as app_module
+from bridge import pricecage
 from tests.fake_bridge import FakeBridge, FakePosition
 
 
@@ -38,9 +40,18 @@ class PriceTypeAndCageTests(unittest.TestCase):
         app_module.bridge_market.price_reference = lambda code: {
             "code": code, "last_price": 9.00, "last_close": 9.00,
             "up_stop": 9.90, "down_stop": 8.10}
+        # 笼子的宽窄跟当前是连续竞价还是集合竞价有关（±2% vs ±10%），这个类
+        # 里的期望值全按连续竞价算的。不锁定会话的话，测试套件如果刚好在
+        # 9:15-9:25 或 14:57-15:00 跑，session_of(真实的 datetime.now()) 会
+        # 返回 auction，笼子变成 ±10%，断言跟着全错——不是代码的问题，是
+        # 测试没跟真实时钟脱钩。
+        self._session_patch = mock.patch.object(
+            pricecage, "session_of", return_value=pricecage.SESSION_CONTINUOUS)
+        self._session_patch.start()
         self._clean()
 
     def tearDown(self):
+        self._session_patch.stop()
         app_module.bridge_market.price_reference = self._saved_reference
         self.bridge.__exit__(None, None, None)
         self.client.close()

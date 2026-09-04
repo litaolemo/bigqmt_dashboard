@@ -11,9 +11,11 @@ order_sys_id，失败原因当场可见。风控从建议变成闸门。
 dashboard 的 SQLite，而 app.py 会 import 本模块 —— 直接反向 import 会成环。
 """
 
+import datetime as _datetime
 import threading
 import time
 
+import settings
 from bridge import instruments
 from bridge import optypes
 from bridge import market as bridge_market
@@ -51,6 +53,37 @@ def register_risk_gate(fn):
         _HOOKS["risk_gate"] = fn
 
 
+class temporary_risk_gate:
+    """测试用：临时换一个风控闸门，退出时换回原来那个——不是换成 None。
+
+    `_HOOKS` 是模块级全局，进程内所有测试共用一份。真实闸门是 app.py 启动时
+    注册的 order_risk_gate；测试如果图省事在 finally 里写
+    `register_risk_gate(None)`，退出时就把它清空了，而不是换回原来的那个。
+    同一个 pytest 进程后面所有测试都会在"没有风控闸门"的状态下跑，而且
+    大概率没人注意到——直到某个断言风控生效的测试莫名其妙失败。
+
+    用法::
+
+        with bridge_orders.temporary_risk_gate(fake_gate):
+            ...
+    """
+
+    def __init__(self, fn):
+        self._fn = fn
+        self._saved = None
+
+    def __enter__(self):
+        with _LOCK:
+            self._saved = _HOOKS["risk_gate"]
+            _HOOKS["risk_gate"] = self._fn
+        return self
+
+    def __exit__(self, *exc):
+        with _LOCK:
+            _HOOKS["risk_gate"] = self._saved
+        return False
+
+
 def register_audit_sink(fn):
     """注册审计落库：fn(record_dict) -> None。抛错不影响下单结果。"""
     with _LOCK:
@@ -74,6 +107,51 @@ def _write_audit(record):
     except Exception as e:
         # 审计写失败不能反过来把已经报出去的单子搞成"失败"
         print(f"[下单审计] 写入失败: {e}")
+
+
+# ---- 全局熔断：一天内碰交易所的次数有上限 ----
+#
+# 防的是软件自己失控——某个 bug（脚本死循环、条件单反复误触发、误操作连点）
+# 在短时间内反复真实报单/撤单。按自然日计数，进程重启会清零：重启通常就是
+# 运维在处理导致失控的那个 bug，清零是合理的，不值得为了这个再接一张持久化表、
+# 再操心跨进程/跨重启的一致性。
+#
+# 只在真的要碰交易所之前计数（下单提交前 / 撤单提交前），被更早的校验或风控
+# 拦下的请求不算——那些根本没碰交易所，不该占熔断额度，也不该被无关的失败
+# 请求提前把额度耗尽。
+DAILY_ACTION_LIMIT = settings.env_int("DAILY_ACTION_LIMIT", 2000)
+
+_ACTION_GUARD_LOCK = threading.Lock()
+_ACTION_GUARD_STATE = {"date": None, "count": 0}
+
+
+def check_daily_action_limit():
+    today = _datetime.date.today()
+    with _ACTION_GUARD_LOCK:
+        if _ACTION_GUARD_STATE["date"] != today:
+            _ACTION_GUARD_STATE["date"] = today
+            _ACTION_GUARD_STATE["count"] = 0
+        _ACTION_GUARD_STATE["count"] += 1
+        count = _ACTION_GUARD_STATE["count"]
+    if count > DAILY_ACTION_LIMIT:
+        raise OrderRejected(
+            "今日买卖撤单已达 %d 次上限，熔断保护已触发。如确认是真实需要，"
+            "重启服务会重新计数；如果是误触发，先查清楚是什么在反复下单。"
+            % DAILY_ACTION_LIMIT)
+
+
+def daily_action_count():
+    """今天已经用掉多少次，供 UI/告警展示。"""
+    today = _datetime.date.today()
+    with _ACTION_GUARD_LOCK:
+        return _ACTION_GUARD_STATE["count"] if _ACTION_GUARD_STATE["date"] == today else 0
+
+
+def reset_daily_action_count():
+    """管理员手动复位，或测试用。"""
+    with _ACTION_GUARD_LOCK:
+        _ACTION_GUARD_STATE["date"] = None
+        _ACTION_GUARD_STATE["count"] = 0
 
 
 def price_cage_for(code, side, now=None):
@@ -188,6 +266,7 @@ def place_order(account_id, stock_code, side, volume, price=0.0,
 
         if not skip_risk:
             _run_risk_gate(dict(result))
+        check_daily_action_limit()
 
         trader = bridge_pool.get_trader(account_id)
         acc = bridge_pool.get_account_ref(account_id)
@@ -235,6 +314,7 @@ def cancel_order(account_id, order_id=None, order_sysid=None, market=None,
     try:
         if not bridge_pool.allow_order(account_id):
             raise OrderRejected("账号 %s 未开启下单" % account_id)
+        check_daily_action_limit()
         trader = bridge_pool.get_trader(account_id)
         acc = bridge_pool.get_account_ref(account_id)
         if order_id not in (None, "", -1):

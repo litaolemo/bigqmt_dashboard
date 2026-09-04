@@ -48,6 +48,7 @@ class FakeTrader:
         self.open_orders = []
         self.next_order_id = 1000
         self.fail_with = None
+        self.cash = 0.0
 
     # ---- 下单 ----
     def order_stock_result(self, account, stock_code, order_type, order_volume,
@@ -74,6 +75,9 @@ class FakeTrader:
         return 0
 
     # ---- 查询 ----
+    def query_stock_asset(self, account):
+        return FakeAsset(self.cash)
+
     def query_stock_position(self, account, stock_code):
         return self.positions.get(stock_code)
 
@@ -82,6 +86,11 @@ class FakeTrader:
 
     def query_stock_orders(self, account, cancelable_only=False, strategy_name=""):
         return list(self.open_orders)
+
+
+class FakeAsset:
+    def __init__(self, cash):
+        self.cash = cash
 
 
 class FakePosition:
