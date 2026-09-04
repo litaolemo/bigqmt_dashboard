@@ -235,7 +235,7 @@ def _fire(row, price):
 
     result = bridge_orders.place_order(
         account_id=row["account_id"], stock_code=row["stock_code"], side=row["side"],
-        volume=volume, price_type=row["price_type"] or "peer", sell_all=sell_all,
+        volume=volume, price_type=row["price_type"] or store.DEFAULT_PRICE_TYPE, sell_all=sell_all,
         strategy_name="conditional_order",
         remark="triggered:%s#%s" % (row["trigger_type"], order_id),
         trade_mode=row["trade_mode"] or "",

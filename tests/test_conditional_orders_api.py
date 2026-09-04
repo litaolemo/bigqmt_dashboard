@@ -188,5 +188,150 @@ class DynamicAndPercentTriggerApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
 
 
+class ConditionalOrderPreferenceTests(unittest.TestCase):
+    """条件单记住自己那套报价方式/交易类型，和手动下单的记忆完全隔开。
+
+    为什么不共用一张表：两边合适的默认值根本不同。手动下单默认最新价（限价，
+    报不掉当场看得见）；条件单默认对手方最优，因为止损单报不掉等于没止损，
+    而它触发的时候人多半不在。把手动的「最新价」习惯继承给止损单是危险的。
+    """
+
+    account = "conditional-pref-test"
+
+    def setUp(self):
+        app_module.app.dependency_overrides[app_module.get_current_user] = admin_user
+        self.client = TestClient(app_module.app)
+        self.bridge = FakeBridge([self.account]).__enter__()
+        store.reset_for_tests()
+        self._clean()
+
+    def tearDown(self):
+        self.bridge.__exit__(None, None, None)
+        self.client.close()
+        app_module.app.dependency_overrides.clear()
+        store.reset_for_tests()
+        self._clean()
+
+    def _clean(self):
+        conn = app_module.get_db_connection()
+        for table in ("conditional_order_preferences", "order_preferences"):
+            conn.execute("DELETE FROM %s WHERE account_id = ?" % table, (self.account,))
+        conn.commit()
+        conn.close()
+
+    def _create(self, **extra):
+        payload = {"account_id": self.account, "stock_code": "600000.SH",
+                  "trigger_type": "stop_loss", "trigger_price": 8.5, "volume": 500}
+        payload.update(extra)
+        return self.client.post("/api/conditional-orders", json=payload)
+
+    def _last_order(self):
+        orders = self.client.get(
+            "/api/conditional-orders?account_id=%s&include_inactive=true"
+            % self.account).json()["orders"]
+        return orders[0]
+
+    def _instrument(self, query):
+        return self.client.get("/api/instrument/600000.SH?%s" % query).json()["instrument"]
+
+    # ---- 默认值 ----
+
+    def test_without_a_choice_the_first_one_falls_back_to_peer(self):
+        self.assertEqual(self._create().status_code, 200)
+        self.assertEqual(self._last_order()["price_type"], "peer")
+
+    def test_the_conditional_default_is_not_the_manual_default(self):
+        # 手动面板是最新价，条件单是对手方最优 —— 这个差异是故意的，守住它
+        self.assertEqual(self._instrument("side=sell")["default_price_type"], "latest")
+        self.assertEqual(
+            self._instrument("side=sell&scope=conditional")["default_price_type"], "peer")
+
+    # ---- 记忆 ----
+
+    def test_an_explicit_choice_comes_back_next_time(self):
+        self.assertEqual(self._create(price_type="sh_five_cancel").status_code, 200)
+        store.reset_for_tests()
+        self.assertEqual(self._create().status_code, 200)
+        self.assertEqual(self._last_order()["price_type"], "sh_five_cancel")
+
+    def test_the_dialog_reads_the_conditional_memory(self):
+        self.assertEqual(self._create(price_type="sh_five_cancel").status_code, 200)
+        body = self._instrument(
+            "account_id=%s&side=sell&scope=conditional" % self.account)
+        self.assertEqual(body["default_price_type"], "sh_five_cancel")
+
+    def test_buy_and_sell_are_remembered_separately(self):
+        self.assertEqual(self._create(price_type="sh_five_cancel").status_code, 200)
+        self.assertEqual(
+            self._create(trigger_type="buy_dip", price_type="sh_five_limit").status_code,
+            200)
+        sell = self._instrument("account_id=%s&side=sell&scope=conditional" % self.account)
+        buy = self._instrument("account_id=%s&side=buy&scope=conditional" % self.account)
+        self.assertEqual(sell["default_price_type"], "sh_five_cancel")
+        self.assertEqual(buy["default_price_type"], "sh_five_limit")
+
+    def test_a_rejected_creation_is_not_remembered(self):
+        # 触发价缺失，create 校验不过 —— 这次的选择不算「用过」
+        response = self._create(trigger_price=0, price_type="sh_five_cancel")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self._create().status_code, 200)
+        self.assertEqual(self._last_order()["price_type"], "peer")
+
+    # ---- 两套记忆互不污染 ----
+
+    def test_the_manual_habit_is_not_inherited_by_conditional_orders(self):
+        # 手动下单习惯用最新价，不该让止损单也变成最新价
+        conn = app_module.get_db_connection()
+        conn.execute(
+            "INSERT OR REPLACE INTO order_preferences "
+            "(username, account_id, side, trade_mode, price_type) VALUES (?,?,?,?,?)",
+            ("admin", self.account, "sell", "", "latest"))
+        conn.commit()
+        conn.close()
+        self.assertEqual(self._create().status_code, 200)
+        self.assertEqual(self._last_order()["price_type"], "peer")
+
+    def test_building_a_conditional_order_does_not_touch_the_manual_memory(self):
+        self.assertEqual(self._create(price_type="sh_five_cancel").status_code, 200)
+        # 手动下单弹窗（scope 省略）该看到的还是它自己的默认值
+        self.assertEqual(
+            self._instrument("account_id=%s&side=sell" % self.account)
+            ["default_price_type"], "latest")
+
+    # ---- 继承来的值这次用不了就别用 ----
+
+    def test_a_remembered_type_the_instrument_cannot_use_falls_back(self):
+        conn = app_module.get_db_connection()
+        conn.execute(
+            "INSERT OR REPLACE INTO conditional_order_preferences "
+            "(username, account_id, side, trade_mode, price_type) VALUES (?,?,?,?,?)",
+            ("admin", self.account, "sell", "", "sz_fok"))   # 深市专有
+        conn.commit()
+        conn.close()
+        # 建的是沪市票：不该因为一个用户这次没选的「记忆」把建单卡掉
+        response = self._create(stock_code="600000.SH")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self._last_order()["price_type"], "peer")
+
+    def test_a_remembered_mode_the_account_cannot_use_falls_back(self):
+        conn = app_module.get_db_connection()
+        conn.execute(
+            "INSERT OR REPLACE INTO conditional_order_preferences "
+            "(username, account_id, side, trade_mode, price_type) VALUES (?,?,?,?,?)",
+            ("admin", self.account, "sell", "margin", ""))   # 信用账户才有
+        conn.commit()
+        conn.close()
+        self.assertEqual(self._create().status_code, 200)
+        # 普通账户用不了融资融券，留空让触发时按账户类型取默认，
+        # 而不是带着一个触发那天才会失败的值躺进库里
+        self.assertEqual(self._last_order()["trade_mode"], "")
+
+    def test_an_explicit_choice_wins_over_the_remembered_one(self):
+        self.assertEqual(self._create(price_type="sh_five_cancel").status_code, 200)
+        store.reset_for_tests()
+        self.assertEqual(self._create(price_type="latest").status_code, 200)
+        self.assertEqual(self._last_order()["price_type"], "latest")
+
+
 if __name__ == "__main__":
     unittest.main()

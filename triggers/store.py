@@ -35,6 +35,11 @@ TRIGGER_TYPES = {
 # 这些类型的"触发价"是当天动态算出来的涨停价，不是用户填的固定数字。
 DYNAMIC_TRIGGER_TYPES = frozenset({"limit_up_break", "limit_up_buy"})
 
+# 条件单没指定报价方式时用对手方最优，而不是手动面板那个「最新价」：
+# 止损单报不掉等于没止损，而它触发的时候人多半不在。对手方最优是立即可
+# 成交的市价指令，这是条件单该有的默认，别跟手动下单的默认混为一谈。
+DEFAULT_PRICE_TYPE = "peer"
+
 STATUS_ACTIVE = "active"
 STATUS_SUBMITTING = "submitting"   # 已经拿到下单权、正在提交给大QMT，见 claim_for_firing
 STATUS_TRIGGERED = "triggered"
@@ -94,7 +99,7 @@ def _row_to_dict(cursor, row):
 
 
 def create(account_id, stock_code, trigger_type, trigger_price=None, trigger_pct=None,
-          volume=0, percentage=0, price_type="peer", trade_mode="", operator="", remark=""):
+          volume=0, percentage=0, price_type="", trade_mode="", operator="", remark=""):
     """新建一条条件单。校验只管字段本身是否自洽——标的规则/价格笼子留给触发时的
     place_order 去把关，创建时的价格未必就是触发时该遵守的价格笼子（笼子是实时算的）。
 
@@ -149,7 +154,7 @@ def create(account_id, stock_code, trigger_type, trigger_price=None, trigger_pct
     if percentage and not (0 < percentage <= 100):
         raise ValueError("百分比必须在 1-100 之间")
 
-    price_type = price_type or "peer"
+    price_type = price_type or DEFAULT_PRICE_TYPE
     try:
         _, price_spec = pricetypes.resolve(price_type, stock_code)
     except ValueError as e:
@@ -170,7 +175,7 @@ def create(account_id, stock_code, trigger_type, trigger_price=None, trigger_pct
              volume, percentage, price_type, trade_mode, operator, remark)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (str(account_id), str(stock_code), trigger_type, side, compare, trigger_price,
-              volume, percentage, price_type or "peer", trade_mode or "",
+              volume, percentage, price_type or DEFAULT_PRICE_TYPE, trade_mode or "",
               operator or "", remark or ""))
         conn.commit()
         return cursor.lastrowid
@@ -184,7 +189,7 @@ def list_active(account_id=None):
     conn = dbaccess.connect()
     cursor = conn.cursor()
     try:
-        if account_id and account_id != "all":
+        if account_id and str(account_id).lower() != "all":
             cursor.execute(
                 "SELECT * FROM conditional_orders WHERE status = ? AND account_id = ? "
                 "ORDER BY created_at DESC", (STATUS_ACTIVE, str(account_id)))
@@ -204,7 +209,7 @@ def list_all(account_id=None, limit=200):
     conn = dbaccess.connect()
     cursor = conn.cursor()
     try:
-        if account_id and account_id != "all":
+        if account_id and str(account_id).lower() != "all":
             cursor.execute(
                 "SELECT * FROM conditional_orders WHERE account_id = ? "
                 "ORDER BY created_at DESC LIMIT ?", (str(account_id), int(limit)))

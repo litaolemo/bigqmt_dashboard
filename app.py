@@ -697,6 +697,22 @@ def init_db():
     )
     ''')
 
+    # 条件单的偏好单独一张表，不跟手动下单共用。两边「合适的默认值」根本不同：
+    # 手动下单默认最新价（限价，报不掉你当场看得见）；条件单默认对手方最优，
+    # 因为止损单报不掉等于没止损，而它触发时你多半不在。把手动的习惯继承给
+    # 止损单是危险的 —— 所以分两张表，结构上就串不了，而不是靠某处记得加过滤。
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS conditional_order_preferences (
+        username TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        side TEXT NOT NULL,
+        trade_mode TEXT,
+        price_type TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (username, account_id, side)
+    )
+    ''')
+
     conn.commit()
     conn.close()
 
@@ -5957,25 +5973,67 @@ def remember_order_preference(username, results, price_type, trade_mode):
         print(f"[下单偏好] 保存失败（不影响下单）: {e}")
 
 
-def load_order_preference(username, account_id, side):
-    """该人在该账号、该方向上上次用的选择。没记录返回空字典。"""
+def _load_preference(table, username, account_id, side):
+    """偏好表的通用读取。手动下单和条件单各一张表，表结构一样、语义不一样。"""
     if not (username and account_id and side):
         return {}
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT trade_mode, price_type FROM order_preferences "
-            "WHERE username = ? AND account_id = ? AND side = ?",
+            "SELECT trade_mode, price_type FROM %s "
+            "WHERE username = ? AND account_id = ? AND side = ?" % table,
             (str(username), str(account_id), str(side)))
         row = cursor.fetchone()
         conn.close()
     except Exception as e:
-        print(f"[下单偏好] 读取失败: {e}")
+        print(f"[下单偏好] 读取失败({table}): {e}")
         return {}
     if not row:
         return {}
     return {"trade_mode": row[0] or "", "price_type": row[1] or ""}
+
+
+def load_order_preference(username, account_id, side):
+    """该人在该账号、该方向上上次手动下单用的选择。没记录返回空字典。"""
+    return _load_preference("order_preferences", username, account_id, side)
+
+
+def load_conditional_order_preference(username, account_id, side):
+    """该人上次建条件单用的选择。和手动下单的那套完全隔开，理由见建表处。"""
+    return _load_preference(
+        "conditional_order_preferences", username, account_id, side)
+
+
+def remember_conditional_order_preference(username, account_id, side,
+                                          price_type, trade_mode):
+    """建条件单时记下这次的选择，下次开弹窗预选。
+
+    和手动下单那边不同，这里是「建单即记」而不是「报单成功才记」：条件单建的
+    时候根本还没报单，能记的只有人的选择本身。校验不过（ValueError）的那次不
+    会走到这里 —— 调用点在 create 成功之后。
+    写失败不影响建单结果：单已经建好了，为了记个偏好报 500 很荒唐。
+    """
+    username = str(username or "").strip()
+    account_id = str(account_id or "").strip()
+    side = str(side or "").strip()
+    if not (username and account_id and side):
+        return
+    try:
+        conn = get_db_connection()
+        conn.execute('''
+            INSERT INTO conditional_order_preferences
+                (username, account_id, side, trade_mode, price_type, updated_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(username, account_id, side) DO UPDATE SET
+                trade_mode = excluded.trade_mode,
+                price_type = excluded.price_type,
+                updated_at = CURRENT_TIMESTAMP
+        ''', (username, account_id, side, trade_mode or "", price_type or ""))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[条件单偏好] 保存失败（不影响建单）: {e}")
 
 
 def order_response(result):
@@ -8455,8 +8513,10 @@ class ConditionalOrderCommand(BaseModel):
     trigger_pct: float = 0.0
     volume: int = 0            # 卖出方向可以用 percentage 代替
     percentage: int = 0        # 仅卖出方向：占触发时可用持仓的百分比
-    price_type: str = "peer"   # 触发后用哪种报价方式下单，默认对手方最优
-    trade_mode: str = ""       # 买卖指令类型，留空按账户类型取默认
+    # 触发后用哪种报价方式下单。留空 = 沿用你上次建条件单用的那个，没有记录
+    # 才退到 triggers.store.DEFAULT_PRICE_TYPE（对手方最优）。
+    price_type: str = ""
+    trade_mode: str = ""       # 买卖指令类型，留空同上，最后退到账户类型的默认
     remark: str = ""
 
 
@@ -8465,6 +8525,37 @@ _CONDITIONAL_TRIGGER_LABELS = {
     "buy_dip": "条件买入（下探）", "buy_breakout": "条件买入（突破）",
     "limit_up_break": "涨停破板卖出", "limit_up_buy": "涨停买入",
 }
+
+
+def _inherit_conditional_order_choice(username, account_id, side, stock_code,
+                                      price_type, trade_mode):
+    """这次没明确给的字段，沿用上次建条件单用的选择，返回 (报价方式, 交易类型)。
+
+    继承来的值要先确认这次还能用，用不了就当没记过：记住的报价方式可能是深市
+    专有的市价指令，而这次建的是沪市票；记住的交易类型可能是融资融券，而账号
+    后来改回了普通。用户这次并没有选它们，不该因为一个「记忆」把建单卡掉 ——
+    更不该让一个用不了的值躺进数据库，那要等到触发那天才报错，等于没有止损。
+    """
+    if price_type and trade_mode:
+        return price_type, trade_mode
+    remembered = load_conditional_order_preference(username, account_id, side)
+    if not remembered:
+        return price_type, trade_mode
+    if not price_type:
+        candidate = remembered.get("price_type") or ""
+        try:
+            usable = {t["value"] for t in bridge_orders.price_type_choices(stock_code)}
+        except Exception:
+            usable = set()   # 判定不了就别继承，退回默认最安全
+        if candidate in usable:
+            price_type = candidate
+    if not trade_mode:
+        candidate = remembered.get("trade_mode") or ""
+        account_type = bridge_pool.account_type_of(account_id)
+        if candidate in {m["value"]
+                         for m in bridge_orders.optypes.choices_for(account_type)}:
+            trade_mode = candidate
+    return price_type, trade_mode
 
 
 @app.post("/api/conditional-orders")
@@ -8486,6 +8577,12 @@ async def create_conditional_order_endpoint(
 
     operator = current_user.get("username") or current_user.get("account_id") or ""
     code = instruments.normalize_code(command.stock_code)
+    # 条件单的方向由类型决定（止损/止盈是卖，条件买入是买），偏好按方向分开记。
+    # 类型不认识时给空串：读不到偏好，后面 create 会给出正经的报错。
+    side = (trigger_store.TRIGGER_TYPES.get(command.trigger_type) or ("", ""))[0]
+    price_type, trade_mode = _inherit_conditional_order_choice(
+        operator, command.account_id, side, code,
+        command.price_type, command.trade_mode)
     try:
         order_id = trigger_store.create(
             account_id=command.account_id, stock_code=code,
@@ -8493,11 +8590,15 @@ async def create_conditional_order_endpoint(
             trigger_price=command.trigger_price or None,
             trigger_pct=command.trigger_pct or None,
             volume=command.volume, percentage=command.percentage,
-            price_type=command.price_type, trade_mode=command.trade_mode,
+            price_type=price_type, trade_mode=trade_mode,
             operator=operator, remark=command.remark,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    # 建成了才记。校验没过的那次不算「用过」，跟手动下单那边一个道理。
+    remember_conditional_order_preference(
+        operator, command.account_id, side,
+        price_type or trigger_store.DEFAULT_PRICE_TYPE, trade_mode)
     return {"status": "success", "id": order_id, "message": "条件单已创建"}
 
 
@@ -8659,6 +8760,8 @@ async def get_instrument_spec(
     volume: int = Query(0, ge=0, description="给定数量时，估算下单金额"),
     account_id: str = Query("", description="账号ID，用于给出该账户能用的买卖指令类型"),
     side: str = Query("", description="buy / sell，用于取回上次在该方向上用过的选择"),
+    scope: str = Query("manual", description="manual（手动下单弹窗）/ conditional（条件单弹窗），"
+                                             "决定默认报价方式和读哪一套记忆"),
     current_user: dict = Depends(get_current_user)
 ):
     """品种规则 + 实时价 + 数量/金额互算。
@@ -8692,11 +8795,20 @@ async def get_instrument_spec(
     spec["account_type"] = account_type
     spec["trade_modes"] = bridge_orders.optypes.choices_for(account_type)
     spec["default_trade_mode"] = bridge_orders.optypes.default_mode_for(account_type)
-    spec["default_price_type"] = bridge_orders.pricetypes.DEFAULT_KEY
+
+    # 条件单弹窗要的是另一套：默认报价方式不同（对手方最优 vs 最新价，理由见
+    # triggers/store.DEFAULT_PRICE_TYPE），记忆也是另一张表。两边不能互相污染 ——
+    # 把手动下单的「最新价」习惯继承给止损单，就是一张报不掉的止损单。
+    conditional = str(scope or "").strip().lower() == "conditional"
+    spec["scope"] = "conditional" if conditional else "manual"
+    spec["default_price_type"] = (trigger_store.DEFAULT_PRICE_TYPE if conditional
+                                  else bridge_orders.pricetypes.DEFAULT_KEY)
 
     # 上次用过的选择，校验过才给：账户类型或交易所变了，记住的那个
     # 可能已经用不了（比如把沪市票的 42 拿到深市票上），那就退回默认。
-    remembered = load_order_preference(
+    load_preference = (load_conditional_order_preference if conditional
+                       else load_order_preference)
+    remembered = load_preference(
         current_user.get("username"), account_id, str(side or "").lower())
     if remembered.get("trade_mode") in {m["value"] for m in spec["trade_modes"]}:
         spec["default_trade_mode"] = remembered["trade_mode"]
