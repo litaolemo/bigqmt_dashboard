@@ -1538,6 +1538,24 @@ def get_order_audit(account_id=None, limit=200):
         conn.close()
 
 
+def in_capital_sample_window(now=None):
+    """现在是不是「自动记出入金」的取样窗口。
+
+    窗口收得很窄是故意的：只取开盘前和收盘后各 5 分钟。这两段里总资产基本是静的，
+    前后两次快照的差额除了出入金没有别的来源，所以猜得准；一旦放宽到盘中，市值
+    波动会被当成转账记进去，那比不记还糟——记错了要人去翻账才发现。
+
+        09:10-09:15   集合竞价 09:15 开始，所以 09:15 那一分钟不算（已经在形成价格）
+        15:00-15:05   收盘之后
+
+    盘中转账落在窗口外，不会被自动记录，得手工在「累计盈亏」卡片里补一条。
+    这是已知的取舍，README 的「出入金与盈亏矫正」一节写了。
+    """
+    now = now or datetime.now()
+    hm = now.hour * 100 + now.minute
+    return (910 <= hm < 915) or (1500 <= hm <= 1505)
+
+
 # 保存资产数据
 def save_asset(account_id, asset):
     conn = get_db_connection()
@@ -1547,17 +1565,15 @@ def save_asset(account_id, asset):
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     now = datetime.now()
     
-    # 自动资金调整（出入金）：仅在「盘前 08:00-09:15（不含 09:15）」与「盘后 15:00-16:00」记录。
-    # 排除 09:15-09:30 集合竞价/开盘时段——这段是价格形成（市值变动），不是资金流，
-    # 不能计入自动资金调整；盘中/夜间断线的瞬时坏数据也一律不记（避免误记巨额"资金变动"）。
+    # 自动资金调整（出入金）：只在 in_capital_sample_window() 说的那两个窗口里记，
+    # 见那个函数上面的说明。窗口外一律不记——盘中总资产每秒都在动，那是市值波动
+    # 不是资金流；断线重连的瞬时坏数据也会被挡在外面（否则会误记巨额"资金变动"）。
     cursor.execute('SELECT total_asset FROM assets WHERE account_id = ?', (account_id,))
     last_asset_row = cursor.fetchone()
     last_total_asset = last_asset_row[0] if last_asset_row and last_asset_row[0] is not None else 0
     current_total_asset = asset.get('total_asset') or 0
 
-    hm = now.hour * 100 + now.minute
-    # 注意上界用 < 915：09:15 起进入集合竞价，9:15-9:30 不计入
-    in_settlement_window = (800 <= hm < 915) or (1500 <= hm <= 1600)
+    in_settlement_window = in_capital_sample_window(now)
 
     is_new_user = last_total_asset == 0 and current_total_asset > 0
     asset_change = current_total_asset - last_total_asset if not is_new_user else current_total_asset
